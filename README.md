@@ -47,6 +47,14 @@ O relatório final é gerado em **HTML**. Ele contém detalhes adicionais que n�
 
 A enumeração Web utiliza sementes canonicalizadas, FFUF adaptativo para evitar fuzzing duplicado de caminhos já cobertos pela recursão, limites concorrentes por ferramenta pesada e apresentação progressiva de FFUF, Nuclei e Nikto. Resultados de tarefas de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
 
+## Versão 2.0.0
+
+A versão 2.0.0 consolida a nova arquitetura operacional do L1ght Recon: scheduler para ferramentas pesadas, FFUF adaptativo, resultados progressivos, métricas internas, UDP em duas fases com distinção entre `open` e `open|filtered`, perfil padrão otimizado e modo `--full` para maior cobertura.
+
+O perfil padrão usa UDP top 200. O modo `--full` usa UDP top 400 e amplia profundidade do Katana, FFUF e análise de código-fonte, sem recorrer a 1000 portas UDP.
+
+Histórico principal: `1.8.1` base estável; `1.8.2` updater/FFUF; `1.8.3` desempenho, HTML, log e SMB; `1.8.4` updater/cleanup; `1.8.5` build intermediário da nova arquitetura; `2.0.0` consolidação da nova geração.
+
 ## Atualização
 
 A ferramenta verifica silenciosamente se há uma versão estável mais nova **antes de processar os argumentos da execução normal**. Isso permite atualizar primeiro e só depois interpretar parâmetros adicionados por versões novas. Se estiver atualizada ou não houver conectividade, não imprime mensagem. Quando existe atualização, valida SHA-256 e sintaxe antes de substituir o script.

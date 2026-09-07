@@ -1,0 +1,92 @@
+name: Publish L1ght Recon v2.0.0
+
+on:
+  push:
+    branches:
+      - publish-v2.0.0
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote v1.8.5 to v2.0.0 and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f l1ght_recon.py
+          test -f requirements.txt
+          test -f README.md
+          test -f setup_tools.sh
+          grep -q 'VERSION = "1.8.5"' l1ght_recon.py
+
+          sed -i 's/^VERSION = "1\.8\.5"/VERSION = "2.0.0"/' l1ght_recon.py
+          sed -i '1s/L1ght Recon v1\.8\.5/L1ght Recon v2.0.0/' requirements.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('README.md')
+          text = p.read_text(encoding='utf-8')
+          if '## Versão 2.0.0' not in text:
+              block = '''\n## Versão 2.0.0\n\nA versão 2.0.0 consolida a nova arquitetura operacional do L1ght Recon: scheduler para ferramentas pesadas, FFUF adaptativo, resultados progressivos, métricas internas, UDP em duas fases com distinção entre `open` e `open|filtered`, perfil padrão otimizado e modo `--full` para maior cobertura.\n\nO perfil padrão usa UDP top 200. O modo `--full` usa UDP top 400 e amplia profundidade do Katana, FFUF e análise de código-fonte, sem recorrer a 1000 portas UDP.\n\nHistórico principal: `1.8.1` base estável; `1.8.2` updater/FFUF; `1.8.3` desempenho, HTML, log e SMB; `1.8.4` updater/cleanup; `1.8.5` build intermediário da nova arquitetura; `2.0.0` consolidação da nova geração.\n'''
+              marker = '\n## Atualização\n'
+              if marker in text:
+                  text = text.replace(marker, block + marker, 1)
+              else:
+                  text += block
+          p.write_text(text, encoding='utf-8')
+          PY
+
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          grep -q 'VERSION = "2.0.0"' l1ght_recon.py
+          grep -q 'DEFAULT_UDP_TOP_PORTS = 200' l1ght_recon.py
+          grep -q 'FULL_UDP_TOP_PORTS = 400' l1ght_recon.py
+          grep -q 'MAX_UDP_TOP_PORTS = 500' l1ght_recon.py
+          grep -q 'UDP_PROGRESS_INTERVAL = 60' l1ght_recon.py
+          grep -q '"--full"' l1ght_recon.py
+          grep -q '"--udp-top"' l1ght_recon.py
+
+          cp l1ght_recon.py releases/l1ght_recon_v2_0_0.py
+          sha="$(sha256sum releases/l1ght_recon_v2_0_0.py | awk '{print $1}')"
+
+          cat > releases/latest.json <<JSON
+          {
+            "version": "2.0.0",
+            "channel": "stable",
+            "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_0_0.py",
+            "sha256": "$sha",
+            "notes": "L1ght Recon 2.0.0: nova arquitetura operacional com scheduler, FFUF adaptativo, resultados progressivos, UDP confirmado em duas fases, métricas internas, perfil padrão otimizado e modo --full."
+          }
+          JSON
+
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          manifest = json.loads(Path('releases/latest.json').read_text())
+          data = Path('releases/l1ght_recon_v2_0_0.py').read_bytes()
+          actual = hashlib.sha256(data).hexdigest()
+          assert manifest['version'] == '2.0.0'
+          assert manifest['sha256'] == actual
+          assert 'VERSION = "2.0.0"' in data.decode('utf-8')
+          print(actual)
+          PY
+
+          rm -f .github/workflows/publish-v200.yml
+
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Publish L1ght Recon v2.0.0"
+          git push origin HEAD:publish-v2.0.0

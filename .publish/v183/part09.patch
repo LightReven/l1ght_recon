@@ -1,0 +1,133 @@
+-            operators.append(f"({safe}) Tj")
+-            operators.append("T*")
+-
+-        operators.append("ET")
+-
+-        stream_text = "\n".join(operators)
+-        stream_bytes = stream_text.encode("cp1252", errors="replace")
+-
+-        objects[content_id] = (
+-            f"<< /Length {len(stream_bytes)} >>\nstream\n".encode("ascii")
+-            + stream_bytes
+-            + b"\nendstream"
+-        )
+-
+-        objects[page_id] = (
+-            f"<< /Type /Page /Parent {pages_id} 0 R "
+-            f"/MediaBox [0 0 {page_width} {page_height}] "
+-            f"/Resources << /Font << /F1 {font_id} 0 R >> >> "
+-            f"/Contents {content_id} 0 R >>"
+-        ).encode("ascii")
+-
+-    max_id = max(objects)
+-    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+-    offsets = [0] * (max_id + 1)
+-
+-    for object_id in range(1, max_id + 1):
+-        offsets[object_id] = len(output)
+-        output.extend(f"{object_id} 0 obj\n".encode("ascii"))
+-        output.extend(objects[object_id])
+-        output.extend(b"\nendobj\n")
+-
+-    xref_offset = len(output)
+-    output.extend(
+-        f"xref\n0 {max_id + 1}\n".encode("ascii")
+-    )
+-    output.extend(b"0000000000 65535 f \n")
+-
+-    for object_id in range(1, max_id + 1):
+-        output.extend(
+-            f"{offsets[object_id]:010d} 00000 n \n".encode("ascii")
+-        )
+-
+-    output.extend(
+-        (
+-            f"trailer\n<< /Size {max_id + 1} /Root {catalog_id} 0 R >>\n"
+-            f"startxref\n{xref_offset}\n%%EOF\n"
+-        ).encode("ascii")
+-    )
+-
+-    report_file.write_bytes(output)
+-    return report_file
+-
+-
+-def _plain_report_lines(target, host, open_ports, web_results, udp_ports=None, service_results=None):
+-    udp_ports = udp_ports or []
+-    service_results = service_results or []
+-
+-    lines = [
+-        "L1ght Recon",
+-        "Scanning & Enumeration",
+-        "",
+-        f"Alvo: {target}",
+-        f"Host: {host}",
+-        f"Execucao: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+-        f"Handle: {HANDLE}",
+-        "",
+-        "PORTAS, SERVICOS E NSE",
+-    ]
+-
+-    for item in open_ports:
+-        description = " ".join(
+-            x for x in [
+-                item["product"],
+-                item["version"],
+-                item["extrainfo"],
+-            ]
+-            if x
+-        )
+-        lines.append(
+-            f"{item['port']}/{item['protocol']} "
+-            f"{item['service'] or '-'} {description or '-'}"
+-        )
+-
+-        for script in item.get("scripts", []):
+-            lines.append(
+-                f"  NSE {script.get('id') or '-'}: "
+-                f"{script.get('output') or '-'}"
+-            )
+-
+-    lines.extend(["", "PORTAS UDP - TOP 1000"])
+-
+-    for item in udp_ports:
+-        description = " ".join(
+-            part
+-            for part in [
+-                item.get("product") or "",
+-                item.get("version") or "",
+-                item.get("extrainfo") or "",
+-            ]
+-            if part
+-        )
+-        lines.append(
+-            f"{item.get('port')}/{item.get('protocol', 'udp')} "
+-            f"{item.get('service') or '-'} {description or '-'}"
+-        )
+-
+-    lines.extend(["", "ENUMERACAO AUTOMATICA DOS SERVICOS"])
+-
+-    for item in service_results:
+-        description = " ".join(
+-            part
+-            for part in [
+-                item.get("product") or "",
+-                item.get("version") or "",
+-            ]
+-            if part
+-        )
+-
+-        ports_display = (
+-            ",".join(str(port) for port in item.get("ports", []))
+-            if item.get("ports")
+-            else str(item.get("port"))
+-        )
+-
+-        lines.append(
+-            f"{item.get('profile') or '-'} "
+-            f"{ports_display}/{item.get('protocol')} "
+-            f"{item.get('service') or '-'} {description or '-'}"
+-        )
+-
+-        if item.get("exports"):
+-            lines.append("  Exports NFS:")
+-            lines.extend(

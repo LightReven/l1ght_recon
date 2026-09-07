@@ -1,0 +1,119 @@
+-                item,
+-                output_dir,
+-            ): item
+-            for item in candidates
+-        }
++        futures = {}
++        for item in regular:
++            future = executor.submit(run_one_service_enum, host, item, output_dir)
++            futures[future] = item
++        if smb_items:
++            future = executor.submit(run_smb_service_enum, host, smb_items, output_dir)
++            futures[future] = smb_items[0]
+ 
+         for future in as_completed(futures):
+             try:
+-                results.append(future.result())
++                value = future.result()
++                results.append(value)
++                if live:
++                    _print_service_partial(value)
+             except Exception as exc:
+                 item = futures[future]
+                 warning(
+@@ -1809,6 +2042,18 @@
+                 + ", ".join(item["users"][:20])
+             )
+ 
++        if item.get("share_access"):
++            accessible = [entry for entry in item["share_access"] if entry.get("listing_allowed")]
++            if accessible:
++                print("  Shares acessíveis via -N:")
++                for entry in accessible:
++                    print(
++                        f"    - {entry.get('share')}: listagem permitida "
++                        f"({entry.get('recursive_items_count') or len(entry.get('root_items') or [])} item(ns))"
++                    )
++                    for example in (entry.get("examples") or [])[:8]:
++                        print(f"        {example}")
++
+         if item.get("groups"):
+             print(
+                 "  Grupos RPC...............: "
+@@ -2138,121 +2383,97 @@
+ 
+ 
+ def run_rpc_anonymous_enum(host, open_ports, output_dir, rpc_result):
+-    open_numbers = {
+-        int(item["port"])
+-        for item in open_ports
+-    }
+-
+-    smb_port = (
+-        445
+-        if 445 in open_numbers
+-        else 139
+-        if 139 in open_numbers
+-        else None
+-    )
+-
++    open_numbers = {int(item["port"]) for item in open_ports}
++    smb_port = 445 if 445 in open_numbers else 139 if 139 in open_numbers else None
+     result = {
+-        "profile": (
+-            "RPC / SMB anonymous"
+-            if smb_port
+-            else "RPC services"
+-        ),
++        "profile": "RPC / SMB anonymous" if smb_port else "RPC services",
+         "port": smb_port or (111 if 111 in open_numbers else 0),
+         "protocol": "tcp",
+         "service": "rpc/smb" if smb_port else "rpcbind",
+-        "product": "",
+-        "version": "",
+-        "scripts": [],
+-        "users": [],
+-        "groups": [],
+-        "shares": [],
++        "product": "", "version": "", "scripts": [],
++        "users": [], "groups": [], "shares": [], "share_access": [],
+         "rpc_entries": list((rpc_result or {}).get("entries", [])),
+-        "anonymous_rpc_allowed": False,
+-        "deeper_enum": False,
++        "anonymous_rpc_allowed": False, "deeper_enum": False,
+     }
+-
+     service_dir = output_dir / "service_enum"
+     service_dir.mkdir(parents=True, exist_ok=True)
+ 
+     if {139, 445} & open_numbers and command_exists("rpcclient"):
+         stdout, _, code = run_command(
+-            [
+-                "rpcclient",
+-                "-U",
+-                "",
+-                "-N",
+-                host,
+-                "-c",
+-                "querydominfo;enumdomusers;enumdomgroups",
+-            ],
++            ["rpcclient", "-U", "", "-N", host, "-c", "querydominfo;enumdomusers;enumdomgroups"],
+             output_file=service_dir / "rpcclient_anonymous.txt",
+             activity=None,
++            timeout=20,
+         )
+-
+         lower = stdout.lower()
+-
+-        denied = any(
+-            marker in lower
+-            for marker in [
+-                "access_denied",
+-                "nt_status_access_denied",
+-                "logon failure",
+-            ]
+-        )
+-
+-        result["users"] = sorted(
+-            set(
+-                re.findall(

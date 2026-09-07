@@ -1,7 +1,7 @@
 {
-  "version": "1.8.4",
+  "version": "1.8.5",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_4.py",
-  "sha256": "6d59671651ddb83db3bd665beef7bafa1f752644b54982435dd5e56fb6529033",
-  "notes": "--check-update passa a instalar atualizações, checagem pré-argparse para compatibilidade com novos parâmetros, log destacado nos artefatos e limpeza de backups .bak legados."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_5.py",
+  "sha256": "bcc6743eabce234c8b400427b58227de143c31f6251aa88e0d07f8c6b5903993",
+  "notes": "UDP padrão top 200 e modo --full top 400; confirmação de open|filtered; FFUF adaptativo; scheduler por ferramenta; resultados progressivos; métricas internas e debug.log mais limpo."
 }

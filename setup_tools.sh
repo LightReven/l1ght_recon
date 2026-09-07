@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
-    echo "[!] Execute como root no Kali."
+    echo "[!] Execute como root no Kali/Debian para o setup automático."
     exit 1
 fi
 
-echo "[*] Atualizando índices APT..."
-apt-get update
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/l1ght_recon.py"
 
-echo "[*] Instalando/atualizando ferramentas do repositório Kali..."
+apt-get update
 apt-get install -y \
     nmap \
     ffuf \
@@ -26,56 +26,36 @@ apt-get install -y \
     golang-go \
     python3-pip
 
-echo "[*] Atualizando dependências Python..."
-python3 -m pip install \
-    --break-system-packages \
-    -U \
-    requests \
-    beautifulsoup4
+python3 -m pip install --break-system-packages -U -r "${SCRIPT_DIR}/requirements.txt"
 
-echo "[*] Instalando/atualizando ferramentas ProjectDiscovery..."
 GOBIN=/usr/local/bin go install github.com/projectdiscovery/httpx/cmd/httpx@latest
 GOBIN=/usr/local/bin go install github.com/projectdiscovery/katana/cmd/katana@latest
 GOBIN=/usr/local/bin go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 
-echo "[*] Atualizando templates do Nuclei..."
 if command -v nuclei >/dev/null 2>&1; then
     nuclei -ut || true
 fi
 
-echo "[*] Verificando ferramentas..."
+if [[ -f "${SCRIPT_PATH}" ]]; then
+    chmod +x "${SCRIPT_PATH}"
+    ln -sfn "${SCRIPT_PATH}" /usr/local/bin/l1ght_recon
+fi
+
 TOOLS=(
-    nmap
-    httpx
-    katana
-    ffuf
-    nikto
-    nuclei
-    whatweb
-    wafw00f
-    dig
-    rpcinfo
-    showmount
-    rpcclient
-    smbclient
-    snmpwalk
-    searchsploit
+    nmap httpx katana ffuf nikto nuclei whatweb wafw00f
+    dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit
 )
 
 missing=0
-
 for tool in "${TOOLS[@]}"; do
-    if command -v "${tool}" >/dev/null 2>&1; then
-        printf "  [OK] %-12s %s\n" "${tool}" "$(command -v "${tool}")"
-    else
-        printf "  [!!] %-12s ausente\n" "${tool}"
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+        printf '[!!] %s ausente\n' "${tool}"
         missing=1
     fi
 done
 
-echo
 if [[ "${missing}" -eq 0 ]]; then
-    echo "[+] Ambiente do L1ght Recon pronto."
+    echo "[+] Ambiente do L1ght Recon pronto. Comando: l1ght_recon"
 else
-    echo "[!] Setup concluído, mas há ferramentas ausentes. Revise as mensagens acima."
+    echo "[!] Setup concluído com dependências ainda ausentes."
 fi

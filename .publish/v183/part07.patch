@@ -1,0 +1,118 @@
++    _debug_log("COMMAND_START", safe_command)
+     process = subprocess.Popen(
+         [str(value) for value in command],
+         stdout=subprocess.PIPE,
+@@ -3222,6 +3425,12 @@
+ 
+     return_code = process.wait()
+     elapsed = time.monotonic() - started_at
++    _debug_log(
++        "COMMAND_END",
++        f"rc={return_code} duration={elapsed:.3f}s cmd={safe_command}",
++    )
++    if raw_lines:
++        _debug_log("STDOUT", "".join(raw_lines))
+ 
+     if raw_log_file:
+         try:
+@@ -3354,14 +3563,21 @@
+ 
+     combined = []
+ 
+-    for index, base_url in enumerate(fuzz_bases, start=1):
+-        combined.extend(
+-            execute_base(
+-                base_url,
+-                index,
+-                auto_calibrate=True,
+-            )
+-        )
++    workers = 1 if LOW_NOISE else min(3, max(1, len(fuzz_bases)))
++    with ThreadPoolExecutor(max_workers=workers) as ffuf_executor:
++        futures = {
++            ffuf_executor.submit(
++                execute_base, base_url, index, True, ""
++            ): (index, base_url)
++            for index, base_url in enumerate(fuzz_bases, start=1)
++        }
++        for future in as_completed(futures):
++            try:
++                combined.extend(future.result())
++            except Exception as exc:
++                index, base_url = futures[future]
++                warning(f"FFUF falhou no caminho {base_url}: {exc}")
++                _debug_log("FFUF_EXCEPTION", f"base={base_url} index={index} exc={exc!r}")
+ 
+     if not combined and fuzz_bases:
+         warning(
+@@ -3370,16 +3586,21 @@
+         )
+ 
+         fallback_bases = fuzz_bases[:3]
+-
+-        for index, base_url in enumerate(fallback_bases, start=1):
+-            combined.extend(
+-                execute_base(
+-                    base_url,
+-                    index,
+-                    auto_calibrate=False,
+-                    suffix="_fallback",
+-                )
+-            )
++        workers = 1 if LOW_NOISE else min(3, max(1, len(fallback_bases)))
++        with ThreadPoolExecutor(max_workers=workers) as ffuf_executor:
++            futures = {
++                ffuf_executor.submit(
++                    execute_base, base_url, index, False, "_fallback"
++                ): (index, base_url)
++                for index, base_url in enumerate(fallback_bases, start=1)
++            }
++            for future in as_completed(futures):
++                try:
++                    combined.extend(future.result())
++                except Exception as exc:
++                    index, base_url = futures[future]
++                    warning(f"FFUF fallback falhou no caminho {base_url}: {exc}")
++                    _debug_log("FFUF_EXCEPTION", f"fallback base={base_url} index={index} exc={exc!r}")
+ 
+     unique = {}
+ 
+@@ -4258,7 +4479,7 @@
+         {
+             "User-Agent": (
+                 "Mozilla/5.0 (X11; Linux x86_64) "
+-                "AppleWebKit/537.36 L1ght-Recon/1.0"
++                "AppleWebKit/537.36 L1ght-Recon/1.8.3"
+             )
+         }
+     )
+@@ -4266,7 +4487,7 @@
+     if cookie:
+         session.headers["Cookie"] = cookie
+ 
+-    for index, url in enumerate(urls):
++    def _fetch_source(url):
+         try:
+             response = session.get(
+                 url,
+@@ -4274,12 +4495,26 @@
+                 verify=False,
+                 allow_redirects=True,
+             )
++            return url, response
+         except requests.RequestException:
++            return url, None
++
++    workers = 1 if LOW_NOISE else min(8, max(1, len(urls)))
++    fetched = []
++    with ThreadPoolExecutor(max_workers=workers) as source_executor:
++        futures = {source_executor.submit(_fetch_source, url): url for url in urls}
++        for future in as_completed(futures):
++            fetched.append(future.result())
++
++    fetched.sort(key=lambda pair: (pair[0] != service["url"], pair[0]))
++
++    for index, (url, response) in enumerate(fetched):
++        if response is None:
+             continue
+ 

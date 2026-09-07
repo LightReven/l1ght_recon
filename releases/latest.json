@@ -1,7 +1,7 @@
 {
-  "version": "1.8.3",
+  "version": "1.8.4",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_3.py",
-  "sha256": "6e24591a872e52a5bb3d5fddc324f57c8e9079e096a04cff355c32f3d0a34125",
-  "notes": "Otimizações de desempenho e fluidez, relatório somente HTML, bootstrap automático, comando no PATH, log detalhado e enumeração SMB anônima somente leitura."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_4.py",
+  "sha256": "6d59671651ddb83db3bd665beef7bafa1f752644b54982435dd5e56fb6529033",
+  "notes": "--check-update passa a instalar atualizações, checagem pré-argparse para compatibilidade com novos parâmetros, log destacado nos artefatos e limpeza de backups .bak legados."
 }

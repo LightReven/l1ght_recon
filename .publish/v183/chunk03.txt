@@ -1,0 +1,388 @@
+ppend(
+-                f"  [{item.get('source') or '-'}] {item.get('url') or '-'}"
+-            )
+-
+-        lines.append("")
+-        lines.append("WHATWEB")
+-        for record in result.get("whatweb", []):
+-            lines.append(
+-                f"  {record.get('url') or '-'} [{record.get('status') or '-'}]"
+-            )
+-            for plugin in record.get("plugins", []):
+-                values = " | ".join(plugin.get("values") or ["detectado"])
+-                lines.append(
+-                    f"    {plugin.get('name') or 'Detalhe'}: {values}"
+-                )
+-
+-        waf_result = result.get("wafw00f") or {}
+-        lines.extend(["", "WAFW00F"])
+-        lines.append(
+-            "  Detectado: "
+-            + ("sim" if waf_result.get("detected") else "nao")
+-        )
+-        if waf_result.get("wafs"):
+-            lines.append(
+-                "  Produtos: " + ", ".join(waf_result["wafs"])
+-            )
+-
+-        lines.extend(["", "FORMULARIOS"])
+-        for form in source["forms"]:
+-            fields = ", ".join(
+-                f"{field['name']} ({field['type']})"
+-                for field in form["fields"]
+-            ) or "-"
+-            lines.append(
+-                f"  {form['method']} {form['action']} | {fields}"
+-            )
+-
+-        lines.extend(["", "PARAMETROS - PADROES AGRUPADOS"])
+-        for rec in result["parameters"]:
+-            count = int(rec.get("count") or 1)
+-            route = rec.get("route") or rec.get("url") or "-"
+-            suffix = f" | {count} variacoes" if count > 1 else ""
+-            lines.append(
+-                f"  {rec['method']} {route} | "
+-                f"{', '.join(rec['parameters'])} | "
+-                f"{', '.join(rec['vectors']) or '-'}"
+-                f"{suffix}"
+-            )
+-
+-        lines.extend(["", "ARQUIVOS JAVASCRIPT"])
+-        lines.extend(f"  {url}" for url in result.get("javascript", []))
+-
+-        lines.extend(["", "APIS"])
+-        lines.extend(f"  {url}" for url in source["api_endpoints"])
+-
+-        lines.extend(["", "PALAVRAS INTERESSANTES"])
+-        for word, count in sorted(
+-            source["interesting_words"].items(),
+-            key=lambda item: (-item[1], item[0]),
+-        ):
+-            lines.append(f"  {word}: {count}")
+-
+-        lines.extend(["", "FFUF"])
+-        for item in result["ffuf_content"]:
+-            lines.append(
+-                f"  [{item.get('status', '-')}] "
+-                f"{item.get('url', '-')} "
+-                f"(length {item.get('length', '-')})"
+-            )
+-
+-        lines.extend(["", "NUCLEI"])
+-        for item in result["nuclei"]:
+-            lines.append(
+-                f"  [{item['severity']}] "
+-                f"{item['name'] or item['template_id'] or '-'} -> "
+-                f"{item['matched'] or item['host'] or '-'}"
+-            )
+-
+-        lines.extend(["", "NIKTO"])
+-        lines.extend(f"  {line}" for line in result["nikto"])
+-
+-        lines.extend(["", "KATANA - RESUMO"])
+-        katana_summary = summarize_katana_urls(
+-            result["service"]["url"],
+-            result["katana_urls"],
+-        )
+-        lines.append(
+-            f"  URLs brutas: {katana_summary['raw']} | "
+-            f"Padroes unicos: {katana_summary['unique_patterns']}"
+-        )
+-        for item in katana_summary["patterns"][:40]:
+-            lines.append(
+-                f"  {item['count']}x {item['signature']}"
+-            )
+-        if len(katana_summary["patterns"]) > 40:
+-            lines.append(
+-                f"  ... +{len(katana_summary['patterns']) - 40} padroes"
+-            )
+-
+-    lines.extend(
+-        [
+-            "",
+-            "-" * 70,
+-            f"{HANDLE} · Rafael Ademilton",
+-        ]
+-    )
+-
+-    return lines
+-
+-
+-def generate_pdf_report(
+-    target,
+-    host,
+-    output_dir,
+-    open_ports,
+-    web_results,
+-    udp_ports=None,
+-    service_results=None,
+-):
+-    report_file = output_dir / "report.pdf"
+-
+-    return _write_builtin_text_pdf(
+-        report_file,
+-        _plain_report_lines(
+-            target,
+-            host,
+-            open_ports,
+-            web_results,
+-            udp_ports=udp_ports or [],
+-            service_results=service_results or [],
+-        ),
+-    )
+-
+-
+ def print_final_port_table(title, ports):
+     print()
+     print(f"{BOLD}{title}{RESET}")
+@@ -5646,7 +5478,6 @@
+     cookie,
+     output_dir,
+     html_report,
+-    pdf_report,
+ ):
+     section("FINAL")
+ 
+@@ -5670,7 +5501,7 @@
+     )
+ 
+     print_final_port_table("PORTAS TCP", open_ports)
+-    print_final_port_table("PORTAS UDP — TOP 1000", udp_ports)
++    print_final_port_table("PORTAS UDP", udp_ports)
+ 
+     print()
+     print(f"{BOLD}ENUMERAÇÃO DOS SERVIÇOS{RESET}")
+@@ -5686,16 +5517,15 @@
+     print(f"{BOLD}ARTEFATOS{RESET}")
+     print(f"  Diretório...............: {output_dir}")
+     print(f"  Relatório HTML..........: {html_report}")
+-    print(f"  Relatório PDF...........: {pdf_report}")
++    print(f"  {DIM}O HTML contém detalhes adicionais que não são exibidos no terminal.{RESET}")
+ 
+     print()
+     success(f"{brand()} finalizado.")
+     print(f"{DIM}{HANDLE} · Rafael Ademilton{RESET}")
+ 
+     print()
+-    print("Abra os relatórios com:\n")
++    print("Abra o relatório com:\n")
+     print(f"  firefox '{html_report}'")
+-    print(f"  xdg-open '{pdf_report}'")
+     print()
+ 
+ 
+@@ -5717,6 +5547,7 @@
+   python3 l1ght_recon.py -t 192.168.92.206 -c 'PHPSESSID=abc123; role=user'
+   python3 l1ght_recon.py -t 192.168.92.206 --low-noise
+   python3 l1ght_recon.py -t 192.168.92.206 --timeout 900
++  python3 l1ght_recon.py -t 192.168.92.206 --log
+   python3 l1ght_recon.py --check-update
+   python3 l1ght_recon.py --update
+   python3 l1ght_recon.py -t 192.168.92.206 --no-update
+@@ -5724,11 +5555,11 @@
+ Fluxo:
+   1. Coleta de rede/DNS quando aplicável.
+   2. Nmap TCP rápido -> detalhamento somente das portas abertas.
+-  3. UDP top 1000 e enumeração de serviços em segundo plano.
++  3. Scan UDP e enumeração de serviços em segundo plano.
+   4. HTTPX/Katana e análise Web.
+   5. Background exibido em ordem: WhatWeb -> FFUF -> Nuclei -> Nikto.
+   6. NFS/mountd, RPC, SNMP e demais serviços são aprofundados.
+-  7. Seção FINAL compila os resultados e gera HTML/PDF.
++  7. Seção FINAL compila os resultados e gera HTML.
+ """
+ 
+     parser = argparse.ArgumentParser(
+@@ -5767,6 +5598,17 @@
+         ),
+     )
+     parser.add_argument(
++        "--log",
++        nargs="?",
++        const="AUTO",
++        default=None,
++        metavar="ARQUIVO",
++        help=(
++            "Registra log detalhado de auditoria. Sem ARQUIVO, usa debug.log "
++            "no diretório da execução."
++        ),
++    )
++    parser.add_argument(
+         "--depth",
+         type=int,
+         default=3,
+@@ -5862,12 +5704,12 @@
+     parser.add_argument(
+         "--skip-udp",
+         action="store_true",
+-        help="Não executa o scan UDP top 1000 em segundo plano.",
++        help="Não executa o scan UDP em segundo plano.",
+     )
+     parser.add_argument(
+         "--skip-service-enum",
+         action="store_true",
+-        help="Não executa a enumeração automática dos serviços não Web.",
++        help="Não executa a enumeração automática dos serviços.",
+     )
+     parser.add_argument(
+         "--skip-ffuf",
+@@ -5999,15 +5841,22 @@
+     )
+     output_dir.mkdir(parents=True, exist_ok=True)
+ 
+-    tools = check_external_tools()
++    if args.log is not None:
++        log_path = output_dir / "debug.log" if args.log == "AUTO" else Path(args.log)
++        init_debug_log(log_path, cookie=cookie)
++        info(f"Log detalhado habilitado: {DEBUG_LOG_PATH}")
++
++    ensure_path_command()
++    tools = check_external_tools(auto_setup=True)
+ 
+     if not tools["nmap"]:
+         error(f"Nmap é necessário para o fluxo principal do {brand()}.")
+         sys.exit(1)
+ 
+-    auxiliary_executor = ThreadPoolExecutor(max_workers=2 if LOW_NOISE else 3)
++    auxiliary_executor = ThreadPoolExecutor(max_workers=3 if LOW_NOISE else 4)
+     udp_future = None
+     service_future = None
++    smb_anonymous_future = None
+     info_future = auxiliary_executor.submit(
+         run_information_gathering,
+         host,
+@@ -6017,7 +5866,7 @@
+ 
+     if not args.skip_udp:
+         info(
+-            "Iniciando scan UDP top 1000 em segundo plano; "
++            "Iniciando scan UDP em segundo plano; "
+             "o resultado será apresentado somente no final."
+         )
+         udp_future = auxiliary_executor.submit(
+@@ -6036,15 +5885,23 @@
+ 
+     if open_ports and not args.skip_service_enum:
+         info(
+-            "Iniciando enumeração básica dos serviços não Web "
+-            "em segundo plano."
++            "Iniciando enumeração básica dos serviços em segundo plano."
+         )
+         service_future = auxiliary_executor.submit(
+             run_service_enumeration,
+             host,
+             open_ports,
+             output_dir,
++            True,
+         )
++        if any(int(item.get("port", 0)) in {139, 445} for item in open_ports):
++            smb_anonymous_future = auxiliary_executor.submit(
++                run_rpc_anonymous_enum,
++                host,
++                open_ports,
++                output_dir,
++                {"entries": [], "raw": ""},
++            )
+ 
+     web_services = []
+ 
+@@ -6078,13 +5935,14 @@
+     if not vhost_domain and not is_ip(host):
+         vhost_domain = host
+ 
+-    if not vhost_domain and is_ip(host):
++    if web_services and not vhost_domain and is_ip(host):
+         warning(
+             "Alvo é IP e --vhost-domain não foi informado; "
+             "enumeração de virtual hosts será ignorada."
+         )
+ 
+-    section("3. ENUMERAÇÃO WEB POR SERVIÇO")
++    if web_services:
++        section("3. ENUMERAÇÃO WEB POR SERVIÇO")
+ 
+     # Prepare service folders and result objects first.
+     result_by_key = {}
+@@ -6295,6 +6153,7 @@
+                 service["url"],
+                 katana_urls,
+             )
++            drain_ffuf_partial_blocks()
+ 
+             if katana_forms:
+                 (service_dir / "katana_forms.json").write_text(
+@@ -6534,13 +6393,26 @@
+ 
+     if service_future is not None:
+         try:
+-            service_results.extend(service_future.result())
++            service_results.extend(
++                wait_future_with_progress(service_future, "Enumeração de serviços")
++            )
+         except Exception as exc:
+             warning(f"Falha consolidando enumeração de serviços TCP: {exc}")
+ 
++    early_smb_anonymous = None
++    if smb_anonymous_future is not None:
++        try:
++            early_smb_anonymous = wait_future_with_progress(
++                smb_anonymous_future, "Enumeração SMB anônima"
++            )
++            if early_smb_anonymous:
++                service_results.append(early_smb_anonymous)
++        except Exception as exc:
++            warning(f"Falha consolidando enumeração SMB anônima: {exc}")
++
+     if udp_future is not None:
+         try:
+-            udp_ports = udp_future.result()
++            udp_ports = wait_future_with_progress(udp_future, "Scan UDP")
+         except Exception as exc:
+             warning(f"Falha consolidando scan UDP: {exc}")
+             udp_ports = []
+@@ -6589,12 +6461,14 @@
+         if nfs_deep:
+             service_results.append(nfs_deep)
+ 
+-        rpc_anonymous = run_rpc_anonymous_enum(
+-            host,
+-            open_ports,
+-            output_dir,
+-            rpc_result,
+-        )
++        rpc_anonymous = None
++        if smb_anonymous_future is None:
++            rpc_anonymous = run_rpc_anonymous_enum(
++                host,
++                open_ports,
++                output_dir,
++                rpc_result,
++            )
+ 
+         if rpc_anonymous:
+             service_results.append(rpc_anonymous)
+@@ -6647,16 +6521,6 @@
+         udp_ports=udp_ports,
+         service_results=service_results,
+     )
+-    pdf_report = generate_pdf_report(
+-        target,
+-        host,
+-        output_dir,
+-        open_ports,
+-        all_results,
+-        udp_ports=udp_ports,
+-        service_results=service_results,
+-    )
+-
+     print_final_compilation(
+         target,
+         open_ports,
+@@ -6669,7 +6533,6 @@
+         cookie,
+         output_dir,
+         html_report,
+-        pdf_report,
+     )
+ 
+ 

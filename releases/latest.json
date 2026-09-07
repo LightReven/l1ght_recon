@@ -1,7 +1,7 @@
 {
-  "version": "1.8.2",
+  "version": "1.8.3",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_2.py",
-  "sha256": "88131361712cef996aec1273ff83337e79160f09e723cc8ff634097b3cd2e4e1",
-  "notes": "Atualização automática silenciosa e correção da exibição dos resultados do FFUF."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_3.py",
+  "sha256": "6e24591a872e52a5bb3d5fddc324f57c8e9079e096a04cff355c32f3d0a34125",
+  "notes": "Otimizações de desempenho e fluidez, relatório somente HTML, bootstrap automático, comando no PATH, log detalhado e enumeração SMB anônima somente leitura."
 }

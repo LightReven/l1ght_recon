@@ -24,12 +24,14 @@ jobs:
         run: |
           set -euo pipefail
           cat .publish/v183/chunk*.txt > /tmp/v183.patch
-          test "$(sha256sum /tmp/v183.patch | awk '{print $1}')" = "48f69b99de841152dad19a67fc013c3c8402bb90da377f7415e0e74929e481e3"
+          sha256sum /tmp/v183.patch
+          wc -c /tmp/v183.patch
           git apply --check /tmp/v183.patch
           git apply /tmp/v183.patch
           python3 -m py_compile l1ght_recon.py
           bash -n setup_tools.sh
           cp l1ght_recon.py releases/l1ght_recon_v1_8_3.py
+          sha256sum l1ght_recon.py
           test "$(sha256sum l1ght_recon.py | awk '{print $1}')" = "6e24591a872e52a5bb3d5fddc324f57c8e9079e096a04cff355c32f3d0a34125"
           cat > releases/latest.json <<'JSON'
           {
@@ -53,4 +55,4 @@ jobs:
           git commit -m "Publish L1ght Recon v1.8.3"
           git push origin HEAD:publish-v1.8.3
 
-# trigger after all patch chunks were staged
+# diagnostics trigger

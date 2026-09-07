@@ -1,0 +1,454 @@
+ocess.PIPE,
+@@ -3222,6 +3425,12 @@
+ 
+     return_code = process.wait()
+     elapsed = time.monotonic() - started_at
++    _debug_log(
++        "COMMAND_END",
++        f"rc={return_code} duration={elapsed:.3f}s cmd={safe_command}",
++    )
++    if raw_lines:
++        _debug_log("STDOUT", "".join(raw_lines))
+ 
+     if raw_log_file:
+         try:
+@@ -3354,14 +3563,21 @@
+ 
+     combined = []
+ 
+-    for index, base_url in enumerate(fuzz_bases, start=1):
+-        combined.extend(
+-            execute_base(
+-                base_url,
+-                index,
+-                auto_calibrate=True,
+-            )
+-        )
++    workers = 1 if LOW_NOISE else min(3, max(1, len(fuzz_bases)))
++    with ThreadPoolExecutor(max_workers=workers) as ffuf_executor:
++        futures = {
++            ffuf_executor.submit(
++                execute_base, base_url, index, True, ""
++            ): (index, base_url)
++            for index, base_url in enumerate(fuzz_bases, start=1)
++        }
++        for future in as_completed(futures):
++            try:
++                combined.extend(future.result())
++            except Exception as exc:
++                index, base_url = futures[future]
++                warning(f"FFUF falhou no caminho {base_url}: {exc}")
++                _debug_log("FFUF_EXCEPTION", f"base={base_url} index={index} exc={exc!r}")
+ 
+     if not combined and fuzz_bases:
+         warning(
+@@ -3370,16 +3586,21 @@
+         )
+ 
+         fallback_bases = fuzz_bases[:3]
+-
+-        for index, base_url in enumerate(fallback_bases, start=1):
+-            combined.extend(
+-                execute_base(
+-                    base_url,
+-                    index,
+-                    auto_calibrate=False,
+-                    suffix="_fallback",
+-                )
+-            )
++        workers = 1 if LOW_NOISE else min(3, max(1, len(fallback_bases)))
++        with ThreadPoolExecutor(max_workers=workers) as ffuf_executor:
++            futures = {
++                ffuf_executor.submit(
++                    execute_base, base_url, index, False, "_fallback"
++                ): (index, base_url)
++                for index, base_url in enumerate(fallback_bases, start=1)
++            }
++            for future in as_completed(futures):
++                try:
++                    combined.extend(future.result())
++                except Exception as exc:
++                    index, base_url = futures[future]
++                    warning(f"FFUF fallback falhou no caminho {base_url}: {exc}")
++                    _debug_log("FFUF_EXCEPTION", f"fallback base={base_url} index={index} exc={exc!r}")
+ 
+     unique = {}
+ 
+@@ -4258,7 +4479,7 @@
+         {
+             "User-Agent": (
+                 "Mozilla/5.0 (X11; Linux x86_64) "
+-                "AppleWebKit/537.36 L1ght-Recon/1.0"
++                "AppleWebKit/537.36 L1ght-Recon/1.8.3"
+             )
+         }
+     )
+@@ -4266,7 +4487,7 @@
+     if cookie:
+         session.headers["Cookie"] = cookie
+ 
+-    for index, url in enumerate(urls):
++    def _fetch_source(url):
+         try:
+             response = session.get(
+                 url,
+@@ -4274,12 +4495,26 @@
+                 verify=False,
+                 allow_redirects=True,
+             )
++            return url, response
+         except requests.RequestException:
++            return url, None
++
++    workers = 1 if LOW_NOISE else min(8, max(1, len(urls)))
++    fetched = []
++    with ThreadPoolExecutor(max_workers=workers) as source_executor:
++        futures = {source_executor.submit(_fetch_source, url): url for url in urls}
++        for future in as_completed(futures):
++            fetched.append(future.result())
++
++    fetched.sort(key=lambda pair: (pair[0] != service["url"], pair[0]))
++
++    for index, (url, response) in enumerate(fetched):
++        if response is None:
+             continue
+ 
+         summary["source_urls_checked"].append(url)
+ 
+-        if index == 0:
++        if index == 0 or url == service["url"]:
+             summary["headers"] = dict(response.headers)
+ 
+         for response_cookie in response.cookies:
+@@ -4804,6 +5039,27 @@
+                 + html.escape(", ".join(item["shares"]))
+             )
+ 
++        if item.get("share_access"):
++            access_lines = []
++            for entry in item["share_access"]:
++                status = "listagem anônima permitida" if entry.get("listing_allowed") else "sem listagem anônima"
++                count = entry.get("recursive_items_count") or len(entry.get("root_items") or [])
++                access_lines.append(
++                    f"<strong>{html.escape(entry.get('share') or '-')}</strong>: "
++                    f"{html.escape(status)} ({count} item(ns))"
++                )
++                examples = entry.get("examples") or []
++                if examples:
++                    access_lines.extend(
++                        "&nbsp;&nbsp;" + html.escape(example)
++                        for example in examples[:25]
++                    )
++            if access_lines:
++                detail_parts.append(
++                    "<strong>Acesso SMB via -N (somente leitura):</strong><br>"
++                    + "<br>".join(access_lines)
++                )
++
+         if item.get("rpc_entries"):
+             detail_parts.append(
+                 "<strong>Programas RPC:</strong><br>"
+@@ -5100,7 +5356,7 @@
+ <h2>Portas TCP, serviços e resultados NSE</h2>
+ {html_table(["Porta", "Serviço", "Produto / versão", "NSE"], port_rows)}
+ 
+-<h2>Portas UDP — top 1000</h2>
++<h2>Portas UDP</h2>
+ {html_table(["Porta", "Serviço", "Produto / versão", "NSE"], udp_rows)}
+ 
+ <h2>Enumeração automática dos serviços</h2>
+@@ -5119,430 +5375,6 @@
+     return report_file
+ 
+ 
+-def _pdf_escape_text(value):
+-    return (
+-        str(value)
+-        .replace("\\", "\\\\")
+-        .replace("(", "\\(")
+-        .replace(")", "\\)")
+-    )
+-
+-
+-def _write_builtin_text_pdf(report_file, lines):
+-    """
+-    Fallback PDF generator with no third-party dependency.
+-    It creates a readable multi-page text report using Helvetica.
+-    """
+-    page_width = 842
+-    page_height = 595
+-    left = 34
+-    top = 560
+-    line_height = 11
+-    max_lines = 45
+-    wrap_width = 125
+-
+-    wrapped_lines = []
+-
+-    for line in lines:
+-        if line == "":
+-            wrapped_lines.append("")
+-            continue
+-
+-        pieces = textwrap.wrap(
+-            str(line),
+-            width=wrap_width,
+-            replace_whitespace=False,
+-            drop_whitespace=False,
+-        ) or [""]
+-
+-        wrapped_lines.extend(pieces)
+-
+-    pages = [
+-        wrapped_lines[index:index + max_lines]
+-        for index in range(0, len(wrapped_lines), max_lines)
+-    ] or [[]]
+-
+-    objects = {}
+-    next_id = 1
+-
+-    catalog_id = next_id
+-    next_id += 1
+-    pages_id = next_id
+-    next_id += 1
+-    font_id = next_id
+-    next_id += 1
+-
+-    page_ids = []
+-    content_ids = []
+-
+-    for _ in pages:
+-        page_ids.append(next_id)
+-        next_id += 1
+-        content_ids.append(next_id)
+-        next_id += 1
+-
+-    objects[font_id] = (
+-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+-        b"/Encoding /WinAnsiEncoding >>"
+-    )
+-
+-    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
+-    objects[pages_id] = (
+-        f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>"
+-    ).encode("ascii")
+-
+-    objects[catalog_id] = (
+-        f"<< /Type /Catalog /Pages {pages_id} 0 R >>"
+-    ).encode("ascii")
+-
+-    for page_id, content_id, page_lines in zip(
+-        page_ids,
+-        content_ids,
+-        pages,
+-    ):
+-        operators = [
+-            "BT",
+-            "/F1 8.5 Tf",
+-            f"{left} {top} Td",
+-            f"{line_height} TL",
+-        ]
+-
+-        for line in page_lines:
+-            safe = _pdf_escape_text(line)
+-            operators.append(f"({safe}) Tj")
+-            operators.append("T*")
+-
+-        operators.append("ET")
+-
+-        stream_text = "\n".join(operators)
+-        stream_bytes = stream_text.encode("cp1252", errors="replace")
+-
+-        objects[content_id] = (
+-            f"<< /Length {len(stream_bytes)} >>\nstream\n".encode("ascii")
+-            + stream_bytes
+-            + b"\nendstream"
+-        )
+-
+-        objects[page_id] = (
+-            f"<< /Type /Page /Parent {pages_id} 0 R "
+-            f"/MediaBox [0 0 {page_width} {page_height}] "
+-            f"/Resources << /Font << /F1 {font_id} 0 R >> >> "
+-            f"/Contents {content_id} 0 R >>"
+-        ).encode("ascii")
+-
+-    max_id = max(objects)
+-    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+-    offsets = [0] * (max_id + 1)
+-
+-    for object_id in range(1, max_id + 1):
+-        offsets[object_id] = len(output)
+-        output.extend(f"{object_id} 0 obj\n".encode("ascii"))
+-        output.extend(objects[object_id])
+-        output.extend(b"\nendobj\n")
+-
+-    xref_offset = len(output)
+-    output.extend(
+-        f"xref\n0 {max_id + 1}\n".encode("ascii")
+-    )
+-    output.extend(b"0000000000 65535 f \n")
+-
+-    for object_id in range(1, max_id + 1):
+-        output.extend(
+-            f"{offsets[object_id]:010d} 00000 n \n".encode("ascii")
+-        )
+-
+-    output.extend(
+-        (
+-            f"trailer\n<< /Size {max_id + 1} /Root {catalog_id} 0 R >>\n"
+-            f"startxref\n{xref_offset}\n%%EOF\n"
+-        ).encode("ascii")
+-    )
+-
+-    report_file.write_bytes(output)
+-    return report_file
+-
+-
+-def _plain_report_lines(target, host, open_ports, web_results, udp_ports=None, service_results=None):
+-    udp_ports = udp_ports or []
+-    service_results = service_results or []
+-
+-    lines = [
+-        "L1ght Recon",
+-        "Scanning & Enumeration",
+-        "",
+-        f"Alvo: {target}",
+-        f"Host: {host}",
+-        f"Execucao: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+-        f"Handle: {HANDLE}",
+-        "",
+-        "PORTAS, SERVICOS E NSE",
+-    ]
+-
+-    for item in open_ports:
+-        description = " ".join(
+-            x for x in [
+-                item["product"],
+-                item["version"],
+-                item["extrainfo"],
+-            ]
+-            if x
+-        )
+-        lines.append(
+-            f"{item['port']}/{item['protocol']} "
+-            f"{item['service'] or '-'} {description or '-'}"
+-        )
+-
+-        for script in item.get("scripts", []):
+-            lines.append(
+-                f"  NSE {script.get('id') or '-'}: "
+-                f"{script.get('output') or '-'}"
+-            )
+-
+-    lines.extend(["", "PORTAS UDP - TOP 1000"])
+-
+-    for item in udp_ports:
+-        description = " ".join(
+-            part
+-            for part in [
+-                item.get("product") or "",
+-                item.get("version") or "",
+-                item.get("extrainfo") or "",
+-            ]
+-            if part
+-        )
+-        lines.append(
+-            f"{item.get('port')}/{item.get('protocol', 'udp')} "
+-            f"{item.get('service') or '-'} {description or '-'}"
+-        )
+-
+-    lines.extend(["", "ENUMERACAO AUTOMATICA DOS SERVICOS"])
+-
+-    for item in service_results:
+-        description = " ".join(
+-            part
+-            for part in [
+-                item.get("product") or "",
+-                item.get("version") or "",
+-            ]
+-            if part
+-        )
+-
+-        ports_display = (
+-            ",".join(str(port) for port in item.get("ports", []))
+-            if item.get("ports")
+-            else str(item.get("port"))
+-        )
+-
+-        lines.append(
+-            f"{item.get('profile') or '-'} "
+-            f"{ports_display}/{item.get('protocol')} "
+-            f"{item.get('service') or '-'} {description or '-'}"
+-        )
+-
+-        if item.get("exports"):
+-            lines.append("  Exports NFS:")
+-            lines.extend(
+-                f"    {value}"
+-                for value in item["exports"]
+-            )
+-
+-        if item.get("users"):
+-            lines.append(
+-                "  Usuarios RPC: " + ", ".join(item["users"])
+-            )
+-
+-        if item.get("groups"):
+-            lines.append(
+-                "  Grupos RPC: " + ", ".join(item["groups"])
+-            )
+-
+-        if item.get("shares"):
+-            lines.append(
+-                "  Shares anonimos: " + ", ".join(item["shares"])
+-            )
+-
+-        if item.get("rpc_entries"):
+-            lines.append("  Programas RPC:")
+-
+-            for entry in item["rpc_entries"][:30]:
+-                lines.append(
+-                    f"    {entry.get('service')} "
+-                    f"{entry.get('protocol')}/{entry.get('port')} "
+-                    f"(prog {entry.get('program')} v{entry.get('version')})"
+-                )
+-
+-        if item.get("anonymous_rpc_allowed"):
+-            lines.append(
+-                "  RPC anonimo aceito; aprofundamento manual recomendado."
+-            )
+-
+-        for script in item.get("scripts", []):
+-            lines.append(
+-                f"  {script.get('id') or 'NSE'}:"
+-            )
+-
+-            for raw_line in (script.get("output") or "-").splitlines():
+-                lines.append(f"    {raw_line}")
+-
+-        for finding in item.get("public_exploits") or []:
+-            lines.append(
+-                f"  Exploit publico: {finding.get('title') or '-'}"
+-            )
+-
+-    for result in web_results:
+-        service = result["service"]
+-        source = result["source"]
+-
+-        lines.extend(
+-            [
+-                "",
+-                "=" * 70,
+-                f"WEB: {service['url']}",
+-                "=" * 70,
+-                f"Status: {service['status'] or '-'}",
+-                f"Titulo: {service['title'] or '-'}",
+-                f"Servidor: {service['server'] or '-'}",
+-                f"Tecnologias: {', '.join(service['tech']) or '-'}",
+-                "",
+-                "CAMINHOS DESCOBERTOS AUTOMATICAMENTE",
+-            ]
+-        )
+-
+-        for item in result.get("seed_evidence", []):
+-            lines.a

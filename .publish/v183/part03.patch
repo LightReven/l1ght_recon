@@ -1,0 +1,110 @@
++            status = {tool: command_exists(tool) for tool in tools}
++            missing = [tool for tool, found in status.items() if not found]
++
+     if missing:
+         section("DEPENDÊNCIAS EXTERNAS AUSENTES")
+         for tool in missing:
+-            warning(
+-                f"{tool:<8} não encontrado; "
+-                "a etapa correspondente será ignorada."
+-            )
++            warning(f"{tool:<8} não encontrado; a etapa correspondente será ignorada.")
++    else:
++        _debug_log("DEPENDENCIES", "all external tools available")
+ 
+     return status
+ 
+@@ -1629,7 +1797,7 @@
+         section("UDP — RESULTADO DO SCAN EM SEGUNDO PLANO")
+ 
+     if not udp_ports:
+-        print("Nenhuma porta UDP aberta identificada entre as top 1000.")
++        print("Nenhuma porta UDP aberta identificada.")
+         return
+ 
+     print_ports(udp_ports)
+@@ -1724,7 +1892,65 @@
+     }
+ 
+ 
+-def run_service_enumeration(host, ports, output_dir):
++def run_smb_service_enum(host, items, output_dir):
++    ports = sorted({int(item["port"]) for item in items})
++    profile = get_service_profile(items[0])
++    service_dir = output_dir / "service_enum"
++    service_dir.mkdir(parents=True, exist_ok=True)
++    scripts = list(profile["base"])
++    if not LOW_NOISE:
++        scripts.extend(profile["extra"])
++    scripts = list(dict.fromkeys(s for s in scripts if s))
++    normal_file = service_dir / "tcp_smb_139_445.txt"
++    xml_file = service_dir / "tcp_smb_139_445.xml"
++    timing = "-T2" if LOW_NOISE else "-T4"
++    command = [
++        "nmap", "-Pn", "-n", "-sV", "-sS", "-p", ",".join(map(str, ports)),
++        "--script", ",".join(scripts), "--script-timeout", "45s",
++        host, timing, "-oN", normal_file, "-oX", xml_file,
++    ]
++    run_command(command, activity=None)
++    parsed = parse_nmap_xml(xml_file, display=False) if xml_file.exists() else []
++    scripts_out = []
++    product = ""
++    version = ""
++    service = "netbios-ssn"
++    for item in parsed:
++        product = product or item.get("product") or ""
++        version = version or item.get("version") or ""
++        service = item.get("service") or service
++        for script in item.get("scripts") or []:
++            scripts_out.append({
++                "id": f"{item.get('port')}/{script.get('id') or 'NSE'}",
++                "output": script.get("output") or "",
++            })
++    public_exploits = search_public_exploits(
++        product, version, output_dir, f"tcp_smb_{product}_{version}"
++    )
++    return {
++        "profile": "SMB",
++        "port": ports[0],
++        "ports": ports,
++        "protocol": "tcp",
++        "service": service,
++        "product": product,
++        "version": version,
++        "scripts": scripts_out,
++        "public_exploits": public_exploits,
++        "raw_file": str(normal_file),
++    }
++
++
++def _print_service_partial(item):
++    ports = item.get("ports") or [item.get("port")]
++    port_text = ",".join(str(p) for p in ports if p is not None)
++    profile = item.get("profile") or item.get("service") or "Serviço"
++    console_block([
++        f"{GREEN}[+]{RESET} Enumeração concluída: {profile} — {port_text}/{item.get('protocol', 'tcp')}"
++    ])
++
++
++def run_service_enumeration(host, ports, output_dir, live=False):
+     candidates = [
+         item
+         for item in ports
+@@ -1735,22 +1961,29 @@
+         return []
+ 
+     results = []
+-    workers = 1 if LOW_NOISE else min(4, len(candidates))
++    smb_items = [
++        item for item in candidates
++        if item.get("protocol", "tcp") == "tcp" and int(item.get("port", 0)) in {139, 445}
++    ]
++    regular = [item for item in candidates if item not in smb_items]
++    job_count = len(regular) + (1 if smb_items else 0)
++    workers = 1 if LOW_NOISE else min(6, max(1, job_count))
+ 
+     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+-        futures = {
+-            executor.submit(
+-                run_one_service_enum,
+-                host,

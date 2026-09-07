@@ -1,0 +1,414 @@
+ion = version or item.get("version") or ""
++        service = item.get("service") or service
++        for script in item.get("scripts") or []:
++            scripts_out.append({
++                "id": f"{item.get('port')}/{script.get('id') or 'NSE'}",
++                "output": script.get("output") or "",
++            })
++    public_exploits = search_public_exploits(
++        product, version, output_dir, f"tcp_smb_{product}_{version}"
++    )
++    return {
++        "profile": "SMB",
++        "port": ports[0],
++        "ports": ports,
++        "protocol": "tcp",
++        "service": service,
++        "product": product,
++        "version": version,
++        "scripts": scripts_out,
++        "public_exploits": public_exploits,
++        "raw_file": str(normal_file),
++    }
++
++
++def _print_service_partial(item):
++    ports = item.get("ports") or [item.get("port")]
++    port_text = ",".join(str(p) for p in ports if p is not None)
++    profile = item.get("profile") or item.get("service") or "Serviço"
++    console_block([
++        f"{GREEN}[+]{RESET} Enumeração concluída: {profile} — {port_text}/{item.get('protocol', 'tcp')}"
++    ])
++
++
++def run_service_enumeration(host, ports, output_dir, live=False):
+     candidates = [
+         item
+         for item in ports
+@@ -1735,22 +1961,29 @@
+         return []
+ 
+     results = []
+-    workers = 1 if LOW_NOISE else min(4, len(candidates))
++    smb_items = [
++        item for item in candidates
++        if item.get("protocol", "tcp") == "tcp" and int(item.get("port", 0)) in {139, 445}
++    ]
++    regular = [item for item in candidates if item not in smb_items]
++    job_count = len(regular) + (1 if smb_items else 0)
++    workers = 1 if LOW_NOISE else min(6, max(1, job_count))
+ 
+     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+-        futures = {
+-            executor.submit(
+-                run_one_service_enum,
+-                host,
+-                item,
+-                output_dir,
+-            ): item
+-            for item in candidates
+-        }
++        futures = {}
++        for item in regular:
++            future = executor.submit(run_one_service_enum, host, item, output_dir)
++            futures[future] = item
++        if smb_items:
++            future = executor.submit(run_smb_service_enum, host, smb_items, output_dir)
++            futures[future] = smb_items[0]
+ 
+         for future in as_completed(futures):
+             try:
+-                results.append(future.result())
++                value = future.result()
++                results.append(value)
++                if live:
++                    _print_service_partial(value)
+             except Exception as exc:
+                 item = futures[future]
+                 warning(
+@@ -1809,6 +2042,18 @@
+                 + ", ".join(item["users"][:20])
+             )
+ 
++        if item.get("share_access"):
++            accessible = [entry for entry in item["share_access"] if entry.get("listing_allowed")]
++            if accessible:
++                print("  Shares acessíveis via -N:")
++                for entry in accessible:
++                    print(
++                        f"    - {entry.get('share')}: listagem permitida "
++                        f"({entry.get('recursive_items_count') or len(entry.get('root_items') or [])} item(ns))"
++                    )
++                    for example in (entry.get("examples") or [])[:8]:
++                        print(f"        {example}")
++
+         if item.get("groups"):
+             print(
+                 "  Grupos RPC...............: "
+@@ -2138,121 +2383,97 @@
+ 
+ 
+ def run_rpc_anonymous_enum(host, open_ports, output_dir, rpc_result):
+-    open_numbers = {
+-        int(item["port"])
+-        for item in open_ports
+-    }
+-
+-    smb_port = (
+-        445
+-        if 445 in open_numbers
+-        else 139
+-        if 139 in open_numbers
+-        else None
+-    )
+-
++    open_numbers = {int(item["port"]) for item in open_ports}
++    smb_port = 445 if 445 in open_numbers else 139 if 139 in open_numbers else None
+     result = {
+-        "profile": (
+-            "RPC / SMB anonymous"
+-            if smb_port
+-            else "RPC services"
+-        ),
++        "profile": "RPC / SMB anonymous" if smb_port else "RPC services",
+         "port": smb_port or (111 if 111 in open_numbers else 0),
+         "protocol": "tcp",
+         "service": "rpc/smb" if smb_port else "rpcbind",
+-        "product": "",
+-        "version": "",
+-        "scripts": [],
+-        "users": [],
+-        "groups": [],
+-        "shares": [],
++        "product": "", "version": "", "scripts": [],
++        "users": [], "groups": [], "shares": [], "share_access": [],
+         "rpc_entries": list((rpc_result or {}).get("entries", [])),
+-        "anonymous_rpc_allowed": False,
+-        "deeper_enum": False,
++        "anonymous_rpc_allowed": False, "deeper_enum": False,
+     }
+-
+     service_dir = output_dir / "service_enum"
+     service_dir.mkdir(parents=True, exist_ok=True)
+ 
+     if {139, 445} & open_numbers and command_exists("rpcclient"):
+         stdout, _, code = run_command(
+-            [
+-                "rpcclient",
+-                "-U",
+-                "",
+-                "-N",
+-                host,
+-                "-c",
+-                "querydominfo;enumdomusers;enumdomgroups",
+-            ],
++            ["rpcclient", "-U", "", "-N", host, "-c", "querydominfo;enumdomusers;enumdomgroups"],
+             output_file=service_dir / "rpcclient_anonymous.txt",
+             activity=None,
++            timeout=20,
+         )
+-
+         lower = stdout.lower()
+-
+-        denied = any(
+-            marker in lower
+-            for marker in [
+-                "access_denied",
+-                "nt_status_access_denied",
+-                "logon failure",
+-            ]
+-        )
+-
+-        result["users"] = sorted(
+-            set(
+-                re.findall(
+-                    r"user:\[([^\]]+)\]",
+-                    stdout,
+-                    flags=re.I,
+-                )
+-            )
+-        )
+-
+-        result["groups"] = sorted(
+-            set(
+-                re.findall(
+-                    r"group:\[([^\]]+)\]",
+-                    stdout,
+-                    flags=re.I,
+-                )
+-            )
+-        )
+-
+-        result["anonymous_rpc_allowed"] = (
+-            code == 0
+-            and not denied
+-            and bool(stdout.strip())
+-        )
++        denied = any(marker in lower for marker in [
++            "access_denied", "nt_status_access_denied", "logon failure"
++        ])
++        result["users"] = sorted(set(re.findall(r"user:\[([^\]]+)\]", stdout, flags=re.I)))
++        result["groups"] = sorted(set(re.findall(r"group:\[([^\]]+)\]", stdout, flags=re.I)))
++        result["anonymous_rpc_allowed"] = code == 0 and not denied and bool(stdout.strip())
+ 
+     if {139, 445} & open_numbers and command_exists("smbclient"):
+         stdout, _, _ = run_command(
+             ["smbclient", "-L", f"//{host}", "-N", "-g"],
+             output_file=service_dir / "smbclient_anonymous.txt",
+             activity=None,
++            timeout=20,
+         )
+-
++        share_types = {}
+         for line in stdout.splitlines():
+             parts = line.split("|")
+-
+             if len(parts) >= 2 and parts[0] in {"Disk", "IPC", "Printer"}:
+-                result["shares"].append(parts[1])
++                share_types[parts[1]] = parts[0]
++        result["shares"] = sorted(share_types)
+ 
+-        result["shares"] = sorted(set(result["shares"]))
++        for share in result["shares"]:
++            if share_types.get(share) != "Disk":
++                continue
++            safe_share = safe_name(share)
++            root_file = service_dir / f"smb_{safe_share}_root.txt"
++            recursive_file = service_dir / f"smb_{safe_share}_recursive.txt"
++            root_out, root_err, root_code = run_command(
++                ["smbclient", f"//{host}/{share}", "-N", "-g", "-c", "ls"],
++                output_file=root_file,
++                activity=None,
++                timeout=15,
++            )
++            combined = (root_out + "\n" + root_err).lower()
++            denied = any(x in combined for x in [
++                "nt_status_access_denied", "nt_status_logon_failure", "access denied"
++            ])
++            allowed = root_code == 0 and not denied
++            access = {
++                "share": share,
++                "listing_allowed": allowed,
++                "root_items": [],
++                "recursive_items_count": 0,
++                "examples": [],
++            }
++            if allowed:
++                root_items = [line.strip() for line in root_out.splitlines() if line.strip()]
++                access["root_items"] = root_items[:100]
++                rec_out, _, _ = run_command(
++                    ["smbclient", f"//{host}/{share}", "-N", "-g", "-c", "recurse;ls"],
++                    output_file=recursive_file,
++                    activity=None,
++                    timeout=25,
++                )
++                recursive_items = [line.strip() for line in rec_out.splitlines() if line.strip()]
++                access["recursive_items_count"] = len(recursive_items)
++                access["examples"] = recursive_items[:25] or root_items[:25]
++                console_block([
++                    f"{GREEN}[+]{RESET} SMB anônimo: //{host}/{share} permite listagem "
++                    f"({len(recursive_items) or len(root_items)} item(ns) observado(s), somente leitura)."
++                ])
++            result["share_access"].append(access)
+ 
+     result["deeper_enum"] = bool(
+-        result["anonymous_rpc_allowed"]
+-        or result["users"]
+-        or result["groups"]
+-        or result["shares"]
+-        or (rpc_result or {}).get("entries")
++        result["anonymous_rpc_allowed"] or result["users"] or result["groups"]
++        or result["shares"] or result["share_access"] or (rpc_result or {}).get("entries")
+     )
+-
+-    if not result["deeper_enum"]:
+-        return None
+-
+-    return result
++    return result if result["deeper_enum"] else None
+ 
+ 
+ def run_snmp_public_enum(host, udp_ports, output_dir):
+@@ -2883,6 +3104,7 @@
+ 
+ def run_katana(service, service_dir, depth, cookie=None, seed_urls=None):
+     output_file = service_dir / "katana.jsonl"
++    seeds_file = service_dir / "katana_seeds.txt"
+ 
+     seeds = {
+         url
+@@ -2890,14 +3112,29 @@
+         if same_service(url, service["url"]) and not is_noise_url(url)
+     }
+     seeds = sorted(seeds)[:25]
++    write_lines(seeds_file, seeds)
+ 
+     info(
+-        f"Executando Katana em {service['url']} - "
+-        f"coletando links, endpoints, JavaScript e formulários "
+-        f"a partir de {len(seeds)} semente(s)..."
++        f"Executando Katana em {service['url']} - coletando links, endpoints, "
++        f"JavaScript e formulários a partir de {len(seeds)} semente(s)..."
++    )
++
++    command = [
++        "katana", "-list", str(seeds_file), "-d", str(depth),
++        "-jc", "-kf", "all", "-fx", "-jsonl", "-silent", "-nc",
++    ]
++    if cookie:
++        command.extend(["-H", f"Cookie: {cookie}"])
++
++    stdout, _, _ = run_command(
++        command,
++        activity=None,
++        heartbeat=drain_ffuf_partial_blocks,
++        heartbeat_interval=0.8,
+     )
++    output_file.write_text(stdout or "", encoding="utf-8")
++    redact_file_secret(output_file, cookie)
+ 
+-    combined_output = []
+     urls = set(seeds)
+     forms = []
+ 
+@@ -2910,63 +3147,27 @@
+         ):
+             urls.add(str(candidate))
+ 
+-    for seed in seeds:
+-        command = [
+-            "katana",
+-            "-u",
+-            seed,
+-            "-d",
+-            str(depth),
+-            "-jc",
+-            "-kf",
+-            "all",
+-            "-fx",
+-            "-jsonl",
+-            "-silent",
+-            "-nc",
+-        ]
+-
+-        if cookie:
+-            command.extend(["-H", f"Cookie: {cookie}"])
+-
+-        stdout, _, _ = run_command(command, activity=None)
+-
+-        if stdout:
+-            combined_output.append(stdout)
+-
+-        for line in stdout.splitlines():
+-            line = line.strip()
+-
+-            if not line:
+-                continue
+-
+-            try:
+-                data = json.loads(line)
+-            except json.JSONDecodeError:
+-                add_url(line)
+-                continue
+-
+-            for key in ("request", "response"):
+-                obj = data.get(key)
+-                if isinstance(obj, dict):
+-                    add_url(obj.get("endpoint") or obj.get("url"))
+-
+-            for key in ("url", "endpoint"):
+-                add_url(data.get(key))
+-
+-            form = data.get("form")
+-            if form:
+-                forms.append(form)
+-
+-    output_file.write_text(
+-        "\n".join(combined_output),
+-        encoding="utf-8",
+-    )
+-    redact_file_secret(output_file, cookie)
++    for line in (stdout or "").splitlines():
++        line = line.strip()
++        if not line:
++            continue
++        try:
++            data = json.loads(line)
++        except json.JSONDecodeError:
++            add_url(line)
++            continue
++        for key in ("request", "response"):
++            obj = data.get(key)
++            if isinstance(obj, dict):
++                add_url(obj.get("endpoint") or obj.get("url"))
++        for key in ("url", "endpoint"):
++            add_url(data.get(key))
++        form = data.get("form")
++        if form:
++            forms.append(form)
+ 
+     urls = clean_url_collection(urls)
+     write_lines(service_dir / "katana_urls.txt", urls)
+-
+     success(f"Katana: {len(urls)} URL(s) coletada(s).")
+     return urls, forms
+ 
+@@ -3176,6 +3377,8 @@
+     non_json_lines = []
+     started_at = time.monotonic()
+ 
++    safe_command = _redact_debug_text(" ".join(str(value) for value in command))
++    _debug_log("COMMAND_START", safe_command)
+     process = subprocess.Popen(
+         [str(value) for value in command],
+         stdout=subpr

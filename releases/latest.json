@@ -1,0 +1,7 @@
+{
+  "version": "1.8.2",
+  "channel": "stable",
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v1_8_2.py",
+  "sha256": "88131361712cef996aec1273ff83337e79160f09e723cc8ff634097b3cd2e4e1",
+  "notes": "Atualização automática silenciosa e correção da exibição dos resultados do FFUF."
+}

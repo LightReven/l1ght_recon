@@ -1,7 +1,7 @@
 {
-  "version": "2.1.0",
+  "version": "2.1.1",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_1_0.py",
-  "sha256": "6a06378125af3313356ef2c719790d77ff8fcbbd04fc12f39661ba89ef9869c0",
-  "notes": "Análise contextual de possíveis credenciais, hashes e segredos em recursos descobertos pelo FFUF/Katana; seleção inteligente de fonte; cache de respostas; score/confiança; sensitive_findings.json e resumo discreto no terminal."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_1_1.py",
+  "sha256": "49787afab9f5127e0cd97e0d0e673a5209e5f2edefd972bee7f414d98e4ec257",
+  "notes": "Corrige correlação de múltiplos pares de credencial e adiciona client_id/client_secret ao detector contextual da série 2.1."
 }

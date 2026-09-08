@@ -1,1 +1,83 @@
-placeholder
+name: Publish L1ght Recon v2.1.0
+
+on:
+  push:
+    branches:
+      - publish-v2.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build and validate v2.1.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .publish/modify_v210.py
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
+          grep -q 'VERSION = "2.1.0"' l1ght_recon.py
+          grep -q 'def _detect_sensitive_data' l1ght_recon.py
+          grep -q 'sensitive_findings.json' l1ght_recon.py
+          grep -q 'response_cache=result\["source_cache"\]' l1ght_recon.py
+          grep -q 'Possíveis credenciais e segredos' l1ght_recon.py
+          python3 - <<'PY'
+          import runpy
+          ns = runpy.run_path('l1ght_recon.py')
+          detect = ns['_detect_sensitive_data']
+          select_urls = ns['_select_source_urls']
+
+          sample = '''user: alice hash: 5f4dcc3b5aa765d61d8327deb882cf99\nuser: bob hash: 098f6bcd4621d373cade4e832627b4f6'''
+          findings = detect('http://192.0.2.10/data/users.php', sample)
+          pairs = [x for x in findings if x.get('kind') == 'credential_pair']
+          assert len(pairs) == 2, pairs
+          assert all(x.get('confidence') == 'alta' for x in pairs), pairs
+          assert any('128 bits' in (x.get('classification') or '') for x in pairs), pairs
+
+          env_sample = 'DB_USER=root\nDB_PASSWORD=S3cr3tValue42!'
+          findings = detect('http://192.0.2.10/config/.env', env_sample)
+          assert any(x.get('kind') == 'credential_pair' for x in findings), findings
+
+          js_noise = 'const password = document.getElementById("password").value;'
+          findings = detect('http://192.0.2.10/app.js', js_noise)
+          assert not findings, findings
+
+          urls = {f'http://192.0.2.10/page{i}.html' for i in range(100)}
+          urls.add('http://192.0.2.10/data/users.php')
+          selected = select_urls('http://192.0.2.10/', urls, 25)
+          assert 'http://192.0.2.10/data/users.php' in selected
+          assert len(selected) > 25
+          print('sensitive-analysis tests: OK')
+          PY
+
+          SHA="$(sha256sum l1ght_recon.py | awk '{print $1}')"
+          cp l1ght_recon.py releases/l1ght_recon_v2_1_0.py
+          cat > releases/latest.json <<JSON
+          {
+            "version": "2.1.0",
+            "channel": "stable",
+            "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_1_0.py",
+            "sha256": "$SHA",
+            "notes": "Análise contextual de possíveis credenciais, hashes e segredos em recursos descobertos pelo FFUF/Katana; seleção inteligente de fonte; cache de respostas; score/confiança; sensitive_findings.json e resumo discreto no terminal."
+          }
+          JSON
+          rm -rf .publish
+          rm -f .github/workflows/publish-v210.yml
+
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Publish L1ght Recon v2.1.0"
+          git push origin HEAD:publish-v2.1.0

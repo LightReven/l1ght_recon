@@ -71,6 +71,10 @@ O detector correlaciona pares como `user/password`, `user/hash`, `login/senha`, 
 
 O terminal exibe somente um resumo. Valores e contexto completos ficam no relatório HTML e em `sensitive_findings.json` dentro do diretório do serviço Web. O `debug.log` registra apenas contagens e metadados da análise, sem copiar os valores sensíveis encontrados. Respostas HTTP já coletadas são reutilizadas entre as fases para evitar requisições duplicadas.
 
+## Versão 2.1.1
+
+A versão 2.1.1 corrige a correlação de pares em blocos de múltiplas credenciais e inclui `client_id/client_secret` como par contextual.
+
 ## Atualização
 
 A ferramenta verifica silenciosamente se há uma versão estável mais nova **antes de processar os argumentos da execução normal**. Isso permite atualizar primeiro e só depois interpretar parâmetros adicionados por versões novas. Se estiver atualizada ou não houver conectividade, não imprime mensagem. Quando existe atualização, valida SHA-256 e sintaxe antes de substituir o script.

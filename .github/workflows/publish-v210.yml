@@ -20,6 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sed -i 's/pattern.subn(new_analyze, s, count=1)/pattern.subn(lambda m: new_analyze, s, count=1)/' .publish/modify_v210.py
           python3 .publish/modify_v210.py
           python3 -m py_compile l1ght_recon.py
           bash -n setup_tools.sh

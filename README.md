@@ -55,6 +55,10 @@ O perfil padrão usa UDP top 200. O modo `--full` usa UDP top 400 e amplia profu
 
 Histórico principal: `1.8.1` base estável; `1.8.2` updater/FFUF; `1.8.3` desempenho, HTML, log e SMB; `1.8.4` updater/cleanup; `1.8.5` build intermediário da nova arquitetura; `2.0.0` consolidação da nova geração.
 
+## Versão 2.0.1
+
+A versão 2.0.1 adiciona discretamente o tempo total da enumeração ao final da execução e registra a duração total também no `debug.log`.
+
 ## Atualização
 
 A ferramenta verifica silenciosamente se há uma versão estável mais nova **antes de processar os argumentos da execução normal**. Isso permite atualizar primeiro e só depois interpretar parâmetros adicionados por versões novas. Se estiver atualizada ou não houver conectividade, não imprime mensagem. Quando existe atualização, valida SHA-256 e sintaxe antes de substituir o script.

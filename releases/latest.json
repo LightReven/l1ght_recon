@@ -1,7 +1,7 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_0_0.py",
-  "sha256": "884ec52d9254f1ec568a4d96051d95b07b0be3325929687fec46dbbe66ab8051",
-  "notes": "L1ght Recon 2.0.0: nova arquitetura operacional com scheduler, FFUF adaptativo, resultados progressivos, UDP confirmado em duas fases, métricas internas, perfil padrão otimizado e modo --full."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_0_1.py",
+  "sha256": "46eaa7465a7be12d75e518ea582f792939977e0e3ce396c1ff6f326c1934132c",
+  "notes": "Exibe discretamente o tempo total de execução ao final e registra a duração total no debug.log."
 }

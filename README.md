@@ -59,6 +59,18 @@ Histórico principal: `1.8.1` base estável; `1.8.2` updater/FFUF; `1.8.3` desem
 
 A versão 2.0.1 adiciona discretamente o tempo total da enumeração ao final da execução e registra a duração total também no `debug.log`.
 
+## Versão 2.1.0
+
+A versão 2.1.0 adiciona análise contextual de possíveis credenciais, hashes e segredos em recursos descobertos pelo FFUF/Katana, seleção inteligente de código-fonte e reutilização de respostas HTTP entre as fases.
+
+## Análise de possíveis credenciais e segredos
+
+A partir da versão 2.1.0, recursos textuais descobertos pelo Katana e FFUF passam por uma análise contextual de dados sensíveis. Arquivos com nomes como `users`, `credentials`, `config`, `database`, `backup`, `hash`, `secret` e semelhantes são priorizados e não consomem o limite normal de páginas da análise de fonte.
+
+O detector correlaciona pares como `user/password`, `user/hash`, `login/senha`, `DB_USER/DB_PASSWORD` e `client_id/client_secret`; reconhece formatos estruturais de hashes e tokens; usa entropia apenas como evidência complementar; atribui score/confiança e evita tratar simples ocorrências de palavras como credenciais confirmadas.
+
+O terminal exibe somente um resumo. Valores e contexto completos ficam no relatório HTML e em `sensitive_findings.json` dentro do diretório do serviço Web. O `debug.log` registra apenas contagens e metadados da análise, sem copiar os valores sensíveis encontrados. Respostas HTTP já coletadas são reutilizadas entre as fases para evitar requisições duplicadas.
+
 ## Atualização
 
 A ferramenta verifica silenciosamente se há uma versão estável mais nova **antes de processar os argumentos da execução normal**. Isso permite atualizar primeiro e só depois interpretar parâmetros adicionados por versões novas. Se estiver atualizada ou não houver conectividade, não imprime mensagem. Quando existe atualização, valida SHA-256 e sintaxe antes de substituir o script.

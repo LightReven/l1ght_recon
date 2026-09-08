@@ -1,7 +1,7 @@
 {
-  "version": "2.0.1",
+  "version": "2.1.0",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_0_1.py",
-  "sha256": "46eaa7465a7be12d75e518ea582f792939977e0e3ce396c1ff6f326c1934132c",
-  "notes": "Exibe discretamente o tempo total de execução ao final e registra a duração total no debug.log."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_1_0.py",
+  "sha256": "6a06378125af3313356ef2c719790d77ff8fcbbd04fc12f39661ba89ef9869c0",
+  "notes": "Análise contextual de possíveis credenciais, hashes e segredos em recursos descobertos pelo FFUF/Katana; seleção inteligente de fonte; cache de respostas; score/confiança; sensitive_findings.json e resumo discreto no terminal."
 }

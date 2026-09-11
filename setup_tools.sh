@@ -75,7 +75,7 @@ retry 2 apt-get update || fail "apt-get update falhou. Verifique rede, DNS e rep
 # não impede a instalação dos demais.
 BASE_PACKAGES=(
     ca-certificates curl unzip tar git
-    python3 python3-pip
+    python3 python3-pip python3-requests python3-bs4
     nmap ffuf nikto whatweb
     dnsutils rpcbind nfs-common smbclient samba-common-bin snmp
     perl ruby
@@ -94,7 +94,7 @@ for pkg in "${BASE_PACKAGES[@]}"; do
 done
 
 # Dependências opcionais do Kali.
-for pkg in wafw00f seclists exploitdb; do
+for pkg in wafw00f exploitdb; do
     if ! apt_install_if_available "${pkg}"; then
         true
     fi
@@ -102,15 +102,30 @@ done
 
 install_python_requirements() {
     [[ -f "${REQ_FILE}" ]] || return 0
-    info "Instalando dependências Python..."
+
+    # Preserve pacotes Python fornecidos pela distribuição quando já atendem
+    # ao L1ght Recon. Isso evita o erro "uninstall-no-record-file" do pip
+    # ao tentar atualizar bibliotecas instaladas pelo APT.
+    if python3 - <<'PY'
+import requests
+from bs4 import BeautifulSoup
+assert tuple(int(x) for x in requests.__version__.split(".")[:2]) >= (2, 31)
+PY
+    then
+        ok "Dependências Python já atendidas pela distribuição."
+        return 0
+    fi
+
+    info "Instalando apenas dependências Python ausentes..."
     if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
-        python3 -m pip install --break-system-packages -U -r "${REQ_FILE}"
+        python3 -m pip install --break-system-packages -r "${REQ_FILE}"
     else
-        python3 -m pip install -U -r "${REQ_FILE}"
+        python3 -m pip install -r "${REQ_FILE}"
     fi
 }
 
-retry 2 install_python_requirements || fail "Falha ao instalar requirements.txt."
+retry 2 install_python_requirements || fail "Falha ao preparar requirements.txt."
+
 
 is_pd_httpx() {
     local bin="${1:-}"
@@ -269,18 +284,31 @@ if ! command -v wafw00f >/dev/null 2>&1; then
     fi
 fi
 
-# SecLists: garante os dois diretórios usados pelos defaults do L1ght Recon.
-if [[ ! -d /usr/share/seclists ]]; then
-    info "SecLists não está disponível via APT; baixando apenas Discovery/Web-Content e Discovery/DNS..."
-    git clone --depth 1 --filter=blob:none --sparse         https://github.com/danielmiessler/SecLists.git /usr/share/seclists || true
-    if [[ -d /usr/share/seclists/.git ]]; then
-        git -C /usr/share/seclists sparse-checkout set             Discovery/Web-Content Discovery/DNS || true
-    fi
-fi
-mkdir -p /usr/share/wordlists
+# SecLists: o pacote completo do Kali é muito grande para o que o L1ght Recon
+# utiliza por padrão. Se as listas necessárias não existirem, baixa somente
+# Discovery/Web-Content e Discovery/DNS por sparse checkout.
+SECLISTS_ROOT=""
 if [[ -d /usr/share/seclists ]]; then
-    ln -sfn /usr/share/seclists /usr/share/wordlists/seclists
+    SECLISTS_ROOT="/usr/share/seclists"
+elif [[ -d /usr/share/wordlists/seclists ]]; then
+    SECLISTS_ROOT="/usr/share/wordlists/seclists"
 fi
+
+if [[ -z "${SECLISTS_ROOT}" || ! -f "${SECLISTS_ROOT}/Discovery/Web-Content/big.txt" ]]; then
+    info "Preparando SecLists mínima para o L1ght Recon..."
+    rm -rf /opt/l1ght-seclists
+    retry 2 git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/danielmiessler/SecLists.git /opt/l1ght-seclists || \
+        fail "Não foi possível baixar a SecLists mínima."
+    git -C /opt/l1ght-seclists sparse-checkout set \
+        Discovery/Web-Content Discovery/DNS || \
+        fail "Falha ao selecionar diretórios da SecLists."
+    SECLISTS_ROOT="/opt/l1ght-seclists"
+fi
+
+mkdir -p /usr/share/wordlists
+ln -sfn "${SECLISTS_ROOT}" /usr/share/wordlists/seclists
+
 
 # Fall back de FFUF por release binária, útil em Debian/Ubuntu mínimos.
 if ! command -v ffuf >/dev/null 2>&1; then

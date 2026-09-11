@@ -67,7 +67,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Scanning & Enumeration
 # ============================================================
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 AUTHOR = "Rafael Ademilton"
 HANDLE = "l1ghtr3v3n"
 
@@ -94,6 +94,7 @@ DEBUG_SECRETS = set()
 NUCLEI_PARTIAL_SEEN = defaultdict(set)
 NIKTO_PARTIAL_SEEN = defaultdict(set)
 WEB_TOOL_SEMAPHORES = {}
+TOOL_BINARIES = {}
 
 DEFAULT_UDP_TOP_PORTS = 200
 FULL_UDP_TOP_PORTS = 400
@@ -669,25 +670,40 @@ def _auto_setup_external_tools(missing):
     setup = _find_setup_script()
     if setup is None:
         return False
-    if hasattr(os, "geteuid") and os.geteuid() != 0:
-        warning(
-            "Há ferramentas ausentes. Execute uma vez com privilégios administrativos "
-            "para permitir o setup automático."
-        )
-        return False
 
-    info(
-        "Preparando automaticamente as dependências externas ausentes: "
-        + ", ".join(missing)
-    )
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if not sudo or not sys.stdin.isatty():
+            warning(
+                "Há ferramentas ausentes. Execute: sudo ./setup_tools.sh "
+                "para concluir a instalação."
+            )
+            return False
+        command = [sudo, "bash", str(setup)]
+        info(
+            "Dependências ausentes detectadas. Solicitando privilégios "
+            "administrativos para concluir o setup automático."
+        )
+    else:
+        command = ["bash", str(setup)]
+        info(
+            "Preparando automaticamente as dependências externas ausentes: "
+            + ", ".join(missing)
+        )
+
     stdout, stderr, code = run_command(
-        ["bash", str(setup)],
+        command,
         activity=None,
         timeout=0,
         register_timeout=False,
     )
     if code != 0:
-        warning("O setup automático não foi concluído; consulte --log para os detalhes.")
+        detail = (stderr or stdout or "").strip().splitlines()
+        suffix = f" Última mensagem: {detail[-1]}" if detail else ""
+        warning(
+            "O setup automático não foi concluído; consulte --log ou execute "
+            f"sudo ./setup_tools.sh manualmente.{suffix}"
+        )
         return False
     return True
 
@@ -1015,8 +1031,63 @@ def section(message):
 # Generic helpers
 # ============================================================
 
+def _looks_like_projectdiscovery_httpx(path):
+    """Evita confundir o httpx da ProjectDiscovery com o CLI do python-httpx."""
+    if not path:
+        return False
+    try:
+        result = subprocess.run(
+            [str(path), "-h"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        output = (result.stdout or "").lower()
+    except Exception:
+        return False
+
+    return (
+        "fast and multi-purpose http toolkit" in output
+        or (
+            "-silent" in output
+            and "-status-code" in output
+            and ("projectdiscovery" in output or "httpx" in output)
+        )
+    )
+
+
+def resolve_tool_binary(command):
+    if command == "httpx":
+        candidates = []
+        for candidate in (
+            shutil.which("httpx-toolkit"),
+            "/usr/local/bin/httpx" if Path("/usr/local/bin/httpx").exists() else None,
+            shutil.which("httpx"),
+        ):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        for candidate in candidates:
+            if _looks_like_projectdiscovery_httpx(candidate):
+                return str(candidate)
+        return None
+
+    return shutil.which(command)
+
+
 def command_exists(command):
-    return shutil.which(command) is not None
+    path = resolve_tool_binary(command)
+    if path:
+        TOOL_BINARIES[command] = path
+        return True
+    TOOL_BINARIES.pop(command, None)
+    return False
+
+
+def tool_command(command):
+    return TOOL_BINARIES.get(command) or resolve_tool_binary(command) or command
 
 
 def safe_name(value):
@@ -1331,7 +1402,14 @@ def check_external_tools(auto_setup=False):
         for tool in missing:
             warning(f"{tool:<8} não encontrado; a etapa correspondente será ignorada.")
     else:
-        _debug_log("DEPENDENCIES", "all external tools available")
+        _debug_log(
+            "DEPENDENCIES",
+            "all external tools available; "
+            + " ".join(
+                f"{name}={TOOL_BINARIES.get(name) or resolve_tool_binary(name) or '-'}"
+                for name in tools
+            ),
+        )
 
     return status
 
@@ -3207,7 +3285,7 @@ def probe_web_services(host, open_ports, output_dir, cookie=None):
         return []
 
     command = [
-        "httpx",
+        tool_command("httpx"),
         "-l",
         targets_file,
         "-silent",
@@ -3554,6 +3632,196 @@ def print_ffuf_finished(service_url, results, label="FFUF"):
 
 
 
+def _ffuf_extension_suffixes(extensions):
+    suffixes = [""]
+    for value in str(extensions or "").split(","):
+        value = value.strip()
+        if not value:
+            continue
+        if not value.startswith("."):
+            value = "." + value
+        if value not in suffixes:
+            suffixes.append(value)
+    return suffixes
+
+
+def _ffuf_redirect_is_path_preserving_upgrade(request_url, location):
+    if not location:
+        return False
+    try:
+        source = urlparse(request_url)
+        target = urlparse(urljoin(request_url, location))
+    except Exception:
+        return False
+
+    source_path = re.sub(r"/{2,}", "/", source.path or "/")
+    target_path = re.sub(r"/{2,}", "/", target.path or "/")
+    return (
+        source.scheme == "http"
+        and target.scheme == "https"
+        and (source.hostname or "").lower() == (target.hostname or "").lower()
+        and source_path.rstrip("/") == target_path.rstrip("/")
+        and (source.query or "") == (target.query or "")
+    )
+
+
+def _ffuf_baseline_profile(base_url, extensions, cookie=None):
+    """Cria uma baseline conservadora com canários inexistentes antes do FFUF."""
+    suffixes = _ffuf_extension_suffixes(extensions)
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": f"L1ght-Recon/{VERSION} ffuf-calibration",
+        "Cache-Control": "no-cache",
+    })
+    if cookie:
+        session.headers["Cookie"] = cookie
+
+    signatures = {}
+    probes_total = 0
+    alias_probes = 0
+
+    for suffix in suffixes:
+        samples = []
+        for index in range(2):
+            material = (
+                f"{base_url}|{suffix}|{index}|{time.monotonic_ns()}"
+            ).encode()
+            token = "l1ght-" + hashlib.sha256(material).hexdigest()[:20]
+            request_url = base_url.rstrip("/") + "/" + token + suffix
+            try:
+                response = session.get(
+                    request_url,
+                    timeout=6,
+                    verify=False,
+                    allow_redirects=False,
+                )
+            except requests.RequestException:
+                continue
+
+            body = response.text or ""
+            location = response.headers.get("Location") or ""
+            sample = {
+                "status": int(response.status_code),
+                "length": len(response.content or b""),
+                "words": len(re.findall(r"\\S+", body)),
+                "lines": len(body.splitlines()),
+                "location": location,
+                "upgrade_preserve": _ffuf_redirect_is_path_preserving_upgrade(
+                    request_url, location
+                ),
+            }
+            samples.append(sample)
+            probes_total += 1
+            if sample["upgrade_preserve"] and 300 <= sample["status"] < 400:
+                alias_probes += 1
+
+        if len(samples) < 2:
+            continue
+
+        comparable = (
+            samples[0]["status"],
+            samples[0]["length"],
+            samples[0]["words"],
+            samples[0]["lines"],
+            bool(samples[0]["location"]),
+        )
+        if all(
+            (
+                item["status"],
+                item["length"],
+                item["words"],
+                item["lines"],
+                bool(item["location"]),
+            ) == comparable
+            for item in samples[1:]
+        ):
+            signatures[suffix] = {
+                "status": samples[0]["status"],
+                "length": samples[0]["length"],
+                "words": samples[0]["words"],
+                "lines": samples[0]["lines"],
+                "has_location": bool(samples[0]["location"]),
+            }
+
+    redirect_alias = (
+        probes_total >= max(2, len(suffixes) * 2)
+        and alias_probes == probes_total
+    )
+
+    return {
+        "base_url": base_url,
+        "suffixes": suffixes,
+        "signatures": signatures,
+        "redirect_alias": redirect_alias,
+        "probes": probes_total,
+        "rejected": 0,
+    }
+
+
+def _ffuf_item_matches_baseline(item, profile):
+    if not isinstance(item, dict) or not profile:
+        return False
+
+    try:
+        status = int(item.get("status") or 0)
+    except Exception:
+        status = 0
+
+    if status in {401, 403, 407, 429} or status >= 500:
+        return False
+
+    item_url = str(item.get("url") or "")
+    redirect = str(item.get("redirectlocation") or "")
+
+    if (
+        profile.get("redirect_alias")
+        and 300 <= status < 400
+        and _ffuf_redirect_is_path_preserving_upgrade(item_url, redirect)
+    ):
+        return True
+
+    suffix = ""
+    try:
+        path = urlparse(item_url).path.lower()
+    except Exception:
+        path = item_url.lower()
+
+    for candidate in sorted(
+        (value for value in profile.get("suffixes", []) if value),
+        key=len,
+        reverse=True,
+    ):
+        if path.endswith(candidate.lower()):
+            suffix = candidate
+            break
+
+    signature = (profile.get("signatures") or {}).get(suffix)
+    if not signature:
+        return False
+    if not (200 <= status < 400):
+        return False
+    if status != int(signature.get("status") or -1):
+        return False
+
+    try:
+        if int(item.get("length")) != int(signature.get("length")):
+            return False
+    except Exception:
+        return False
+
+    for key in ("words", "lines"):
+        if item.get(key) is not None and signature.get(key) is not None:
+            try:
+                if int(item.get(key)) != int(signature.get(key)):
+                    return False
+            except Exception:
+                return False
+
+    if signature.get("has_location"):
+        return bool(redirect)
+    return not bool(redirect)
+
+
 def _load_ffuf_result_file(path):
     path = Path(path)
 
@@ -3583,6 +3851,7 @@ def _run_ffuf_json_stream(
     label="FFUF",
     result_file=None,
     raw_log_file=None,
+    result_filter=None,
 ):
     results = []
     seen = set()
@@ -3615,6 +3884,14 @@ def _run_ffuf_json_stream(
             return
 
         seen.add(key)
+
+        if result_filter is not None:
+            try:
+                if not result_filter(item):
+                    return
+            except Exception as exc:
+                _debug_log("FFUF_FILTER_ERROR", f"{exc!r}")
+
         results.append(item)
 
         if queue:
@@ -3700,6 +3977,8 @@ def run_ffuf_content(
     full_mode=False,
 ):
     aggregate_file = service_dir / "ffuf_content.json"
+    filter_file = service_dir / "ffuf_filter_summary.json"
+
     if not Path(wordlist).exists():
         warning(f"Wordlist de conteúdo não encontrada: {wordlist}")
         return []
@@ -3712,17 +3991,51 @@ def run_ffuf_content(
         "ffuf_content", service=service["url"], bases=len(fuzz_bases),
         depth=ffuf_depth, full=bool(full_mode),
     )
+
     if announce:
         info(
             f"Executando FFUF em {service['url']} - "
-            f"buscando diretórios e arquivos de forma adaptativa em até "
+            f"validando wildcard/soft-404 e enumerando diretamente até "
             f"{len(fuzz_bases)} caminho(s), profundidade {ffuf_depth}..."
         )
 
+    baseline_cache = {}
+    attempted_bases = set()
+
+    def get_baseline(base_url):
+        profile = baseline_cache.get(base_url)
+        if profile is None:
+            profile = _ffuf_baseline_profile(base_url, extensions, cookie=cookie)
+            baseline_cache[base_url] = profile
+            _debug_log(
+                "FFUF_BASELINE",
+                f"base={base_url} probes={profile.get('probes', 0)} "
+                f"signatures={len(profile.get('signatures') or {})} "
+                f"redirect_alias={bool(profile.get('redirect_alias'))}",
+            )
+        return profile
+
     def execute_base(base_url, index, auto_calibrate=True, suffix=""):
+        profile = get_baseline(base_url)
+
+        if profile.get("redirect_alias"):
+            _debug_log(
+                "FFUF_SKIP_REDIRECT_ALIAS",
+                f"base={base_url} reason=path-preserving-http-to-https",
+            )
+            if announce and not profile.get("_announced_alias"):
+                info(
+                    f"FFUF: {base_url} funciona como redirecionador canônico "
+                    "HTTP→HTTPS; fuzzing duplicado dessa base foi omitido."
+                )
+                profile["_announced_alias"] = True
+            return []
+
+        attempted_bases.add(base_url)
         fuzz_url = base_url.rstrip("/") + "/FUZZ"
         result_file = service_dir / f"ffuf_run_{index:02d}{suffix}.json"
         raw_log_file = service_dir / f"ffuf_run_{index:02d}{suffix}.stdout.log"
+
         command = [
             "ffuf", "-w", f"{wordlist}:FUZZ", "-u", fuzz_url,
             "-recursion", "-recursion-depth", str(ffuf_depth),
@@ -3742,65 +4055,123 @@ def run_ffuf_content(
             "-mc", "all", "-fc", "404", "-noninteractive", "-json",
             "-of", "json", "-o", str(result_file),
         ])
+
+        def keep_item(item):
+            if _ffuf_item_matches_baseline(item, profile):
+                profile["rejected"] = int(profile.get("rejected") or 0) + 1
+                return False
+            return True
+
         return _run_ffuf_json_stream(
-            command, service["url"], label="FFUF",
-            result_file=result_file, raw_log_file=raw_log_file,
+            command,
+            service["url"],
+            label="FFUF",
+            result_file=result_file,
+            raw_log_file=raw_log_file,
+            result_filter=keep_item,
         )
 
-    def adaptive_pass(auto_calibrate=True, suffix=""):
+    def seed_complete_pass(auto_calibrate=True, suffix=""):
         combined = []
-        if not fuzz_bases:
-            return combined
-        root_results = execute_base(fuzz_bases[0], 1, auto_calibrate, suffix)
-        combined.extend(root_results)
-        skipped = 0
-        for index, base_url in enumerate(fuzz_bases[1:], start=2):
-            if _ffuf_base_covered(base_url, combined):
-                skipped += 1
-                _debug_log("FFUF_SKIP", f"base={base_url} reason=already-covered")
-                continue
+        for index, base_url in enumerate(fuzz_bases, start=1):
             try:
-                combined.extend(execute_base(base_url, index, auto_calibrate, suffix))
+                combined.extend(
+                    execute_base(base_url, index, auto_calibrate, suffix)
+                )
             except Exception as exc:
                 warning(f"FFUF falhou no caminho {base_url}: {exc}")
-                _debug_log("FFUF_EXCEPTION", f"base={base_url} index={index} exc={exc!r}")
+                _debug_log(
+                    "FFUF_EXCEPTION",
+                    f"base={base_url} index={index} exc={exc!r}",
+                )
         _debug_log(
-            "FFUF_ADAPTIVE",
-            f"service={service['url']} bases={len(fuzz_bases)} skipped={skipped} "
-            f"executed={len(fuzz_bases)-skipped}",
+            "FFUF_SEED_PASS",
+            f"service={service['url']} bases={len(fuzz_bases)} "
+            f"attempted={len(attempted_bases)}",
         )
         return combined
 
-    combined = adaptive_pass(auto_calibrate=True, suffix="")
-    if not combined and fuzz_bases:
+    combined = seed_complete_pass(auto_calibrate=True, suffix="")
+
+    if not combined and attempted_bases:
         warning(
-            f"FFUF em {service['url']} não retornou achados na passagem "
-            "com auto-calibração; validando novamente sem -ac..."
+            f"FFUF em {service['url']} não retornou achados após os filtros "
+            "conservadores; validando novamente sem -ac..."
         )
-        combined.extend(adaptive_pass(auto_calibrate=False, suffix="_fallback"))
+        combined.extend(seed_complete_pass(auto_calibrate=False, suffix="_fallback"))
 
     unique = {}
     for item in combined:
         key = (item.get("url"), item.get("status"), item.get("length"))
         unique[key] = item
+
     results = sorted(
         unique.values(),
-        key=lambda item: (str(item.get("url", "")), int(item.get("status", 0) or 0)),
+        key=lambda item: (
+            str(item.get("url", "")),
+            int(item.get("status", 0) or 0),
+        ),
     )
+
+    filter_summary = []
+    for base_url, profile in baseline_cache.items():
+        filter_summary.append({
+            "base_url": base_url,
+            "probes": profile.get("probes", 0),
+            "redirect_alias": bool(profile.get("redirect_alias")),
+            "rejected": int(profile.get("rejected") or 0),
+            "signatures": profile.get("signatures") or {},
+        })
+
     aggregate_file.write_text(
-        json.dumps({"results": results}, indent=2, ensure_ascii=False),
+        json.dumps(
+            {"results": results, "filtering": filter_summary},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    filter_file.write_text(
+        json.dumps(filter_summary, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     redact_file_secret(aggregate_file, cookie)
-    metric_end("ffuf_content", started, results=len(results))
+    redact_file_secret(filter_file, cookie)
+
+    rejected_total = sum(int(item.get("rejected") or 0) for item in filter_summary)
+    alias_total = sum(1 for item in filter_summary if item.get("redirect_alias"))
+
+    metric_end(
+        "ffuf_content",
+        started,
+        results=len(results),
+        rejected=rejected_total,
+        redirect_alias_bases=alias_total,
+    )
+
     if announce:
         if results:
-            success(f"FFUF {service['url']}: {len(results)} diretório(s)/arquivo(s) encontrado(s).")
+            message = (
+                f"FFUF {service['url']}: {len(results)} "
+                "diretório(s)/arquivo(s) validado(s)."
+            )
+            if rejected_total or alias_total:
+                message += (
+                    f" Filtro: {rejected_total} resposta(s) wildcard/soft-404 "
+                    f"descartada(s), {alias_total} base(s) de redirecionamento omitida(s)."
+                )
+            success(message)
+        elif alias_total and not attempted_bases:
+            success(
+                f"FFUF {service['url']}: serviço identificado como "
+                "redirecionador canônico; enumeração de conteúdo duplicada omitida."
+            )
         else:
             warning(
                 f"FFUF {service['url']}: 0 resultado(s) após validação. "
-                "Os logs ffuf_run_*.stdout.log foram preservados."
+                "Os JSON/logs brutos continuam preservados nos artefatos."
             )
+
     return results
 
 
@@ -4826,25 +5197,38 @@ def _shannon_entropy(value):
 
 
 def _looks_concrete_sensitive_value(value):
-    text = str(value or "").strip().strip('"\'')
+    text = str(value or "").strip().strip('"\\'')
     if not text:
         return False
+
     lowered = text.lower()
     if lowered in SENSITIVE_PLACEHOLDERS:
         return False
-    if len(text) > 500:
+    if lowered in {
+        "true", "false", "!0", "!1", "0", "1", "yes", "no",
+        "on", "off", "enabled", "disabled",
+    }:
         return False
+    if len(text) < 4 or len(text) > 500:
+        return False
+
     non_values = (
         "document.", "window.", "process.env", "getenv(", "env(", "function(",
-        "function ", "${", "{{", "}}", "$_post", "$_get", "$_server",
+        "function ", "$" + "{", "{{", "}}", "$_post", "$_get", "$_server",
         "password_hash(", "hash(", "md5(", "sha1(", "sha256(", "bcrypt(",
+        ".concat(", "=>", "return ", "require(", "import(",
     )
     if any(token in lowered for token in non_values):
         return False
+
+    if len(text) < 20 and re.search(r"[(){};]|&&|\\|\\||===?|!==?|\\+\\+", text):
+        return False
+
     if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_.$-]*", text) and lowered.endswith(
         ("value", "field", "input", "variable", "var", "element")
     ):
         return False
+
     return True
 
 
@@ -4918,9 +5302,42 @@ SENSITIVE_STRUCTURED_PATTERNS = [
 ]
 
 
+def _is_minified_javascript(url, text):
+    try:
+        path = urlparse(url).path.lower()
+    except Exception:
+        path = str(url or "").lower()
+
+    if not path.endswith((".js", ".mjs", ".cjs")):
+        return False
+
+    content = str(text or "")
+    lines = content.splitlines() or [content]
+    average = sum(len(line) for line in lines) / max(1, len(lines))
+    return (
+        path.endswith(".min.js")
+        or "/vendor/" in path
+        or "/plugins/" in path
+        or "/node_modules/" in path
+        or average > 900
+    )
+
+
+def _sensitive_field_allowed_in_minified(key, value):
+    hash_type = _classify_hash_value(value)
+    if hash_type:
+        return True
+    if key in SENSITIVE_HASH_KEYS:
+        return len(value) >= 20
+    if key in SENSITIVE_PASSWORD_KEYS | SENSITIVE_SECRET_KEYS:
+        return len(value) >= 12 and _shannon_entropy(value) >= 3.0
+    return False
+
+
 def _detect_sensitive_data(url, text):
     lines = str(text or "").splitlines()
     parsed_lines = []
+    minified_js = _is_minified_javascript(url, text)
 
     for index, line in enumerate(lines, start=1):
         fields = []
@@ -4931,6 +5348,8 @@ def _detect_sensitive_data(url, text):
                 "",
             ).strip()
             if not _looks_concrete_sensitive_value(value):
+                continue
+            if minified_js and not _sensitive_field_allowed_in_minified(key, value):
                 continue
             fields.append({"key": key, "value": value, "span": match.span()})
         parsed_lines.append({"number": index, "text": line, "fields": fields})
@@ -4951,6 +5370,8 @@ def _detect_sensitive_data(url, text):
                 secret_records.append(record)
 
     for pos, identity in enumerate(identity_records):
+        if minified_js:
+            break
         next_identity_line = (
             identity_records[pos + 1][0]
             if pos + 1 < len(identity_records)

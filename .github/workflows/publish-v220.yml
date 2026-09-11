@@ -1,0 +1,247 @@
+name: Publish L1ght Recon v2.2.0
+
+on:
+  push:
+    branches:
+      - publish-v2.2.0
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate v2.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
+
+          grep -q 'VERSION = "2.2.0"' l1ght_recon.py
+          grep -q 'httpx-toolkit' setup_tools.sh
+          ! grep -q 'go install github.com/projectdiscovery' setup_tools.sh
+          grep -q 'ffuf_filter_summary.json' l1ght_recon.py
+          grep -q 'FFUF_SKIP_REDIRECT_ALIAS' l1ght_recon.py
+
+          python3 - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          import runpy
+
+          ns = runpy.run_path("l1ght_recon.py")
+
+          # 1) Redirect HTTP->HTTPS preservando path deve ser reconhecido.
+          assert ns["_ffuf_redirect_is_path_preserving_upgrade"](
+              "http://192.0.2.10/test.php",
+              "https://192.0.2.10/test.php",
+          )
+          assert not ns["_ffuf_redirect_is_path_preserving_upgrade"](
+              "http://192.0.2.10/admin",
+              "https://192.0.2.10/login",
+          )
+
+          # 2) Filtro conservador: soft-404 estável 200 é removido,
+          # mas 403 permanece visível.
+          profile = {
+              "redirect_alias": False,
+              "suffixes": ["", ".php"],
+              "signatures": {
+                  "": {
+                      "status": 200,
+                      "length": 123,
+                      "words": 10,
+                      "lines": 4,
+                      "has_location": False,
+                  }
+              },
+          }
+          assert ns["_ffuf_item_matches_baseline"](
+              {
+                  "url": "https://192.0.2.10/nonexistent",
+                  "status": 200,
+                  "length": 123,
+                  "words": 10,
+                  "lines": 4,
+                  "redirectlocation": "",
+              },
+              profile,
+          )
+          assert not ns["_ffuf_item_matches_baseline"](
+              {
+                  "url": "https://192.0.2.10/admin",
+                  "status": 403,
+                  "length": 123,
+                  "words": 10,
+                  "lines": 4,
+                  "redirectlocation": "",
+              },
+              profile,
+          )
+
+          # 3) Regressão do /pdf_generator/contents:
+          # o pai encontra um filho, mas a base explícita ainda deve ser fuzzada.
+          calls = []
+          def fake_baseline(base_url, extensions, cookie=None):
+              return {
+                  "base_url": base_url,
+                  "suffixes": [""],
+                  "signatures": {},
+                  "redirect_alias": False,
+                  "probes": 2,
+                  "rejected": 0,
+              }
+
+          def fake_stream(command, service_url, label="FFUF", result_file=None,
+                          raw_log_file=None, result_filter=None):
+              fuzz_url = command[command.index("-u") + 1]
+              calls.append(fuzz_url)
+              if fuzz_url.endswith("/pdf_generator/FUZZ"):
+                  return [{
+                      "url": "https://192.0.2.10/pdf_generator/contents",
+                      "status": 301,
+                      "length": 240,
+                      "words": 8,
+                      "lines": 6,
+                      "redirectlocation": "https://192.0.2.10/pdf_generator/contents/",
+                  }]
+              if fuzz_url.endswith("/FUZZ"):
+                  return [{
+                      "url": "https://192.0.2.10/pdf_generator/Home.php",
+                      "status": 200,
+                      "length": 500,
+                      "words": 50,
+                      "lines": 20,
+                      "redirectlocation": "",
+                  }]
+              return []
+
+          ns["_ffuf_baseline_profile"] = fake_baseline
+          ns["_run_ffuf_json_stream"] = fake_stream
+          with tempfile.TemporaryDirectory() as tmp:
+              wl = Path(tmp) / "words.txt"
+              wl.write_text("contents\n", encoding="utf-8")
+              results = ns["run_ffuf_content"](
+                  {
+                      "url": "https://192.0.2.10",
+                      "scheme": "https",
+                      "host": "192.0.2.10",
+                      "port": 443,
+                  },
+                  Path(tmp),
+                  str(wl),
+                  "",
+                  1,
+                  seed_urls=[
+                      "https://192.0.2.10/",
+                      "https://192.0.2.10/pdf_generator/",
+                  ],
+                  announce=False,
+              )
+          assert any(x.endswith("/pdf_generator/FUZZ") for x in calls), calls
+          assert any("/pdf_generator/contents" in x.get("url", "") for x in results), results
+
+          # 4) Redirecionador canônico não deve iniciar o FFUF.
+          called = []
+          def alias_baseline(base_url, extensions, cookie=None):
+              return {
+                  "base_url": base_url,
+                  "suffixes": [""],
+                  "signatures": {},
+                  "redirect_alias": True,
+                  "probes": 2,
+                  "rejected": 0,
+              }
+          def should_not_run(*args, **kwargs):
+              called.append(True)
+              return []
+          ns["_ffuf_baseline_profile"] = alias_baseline
+          ns["_run_ffuf_json_stream"] = should_not_run
+          with tempfile.TemporaryDirectory() as tmp:
+              wl = Path(tmp) / "words.txt"
+              wl.write_text("admin\n", encoding="utf-8")
+              ns["run_ffuf_content"](
+                  {
+                      "url": "http://192.0.2.10:80",
+                      "scheme": "http",
+                      "host": "192.0.2.10",
+                      "port": 80,
+                  },
+                  Path(tmp),
+                  str(wl),
+                  "",
+                  1,
+                  seed_urls=["http://192.0.2.10:80/"],
+                  announce=False,
+              )
+          assert not called, called
+
+          # 5) Detector sensível mantém credencial real e rejeita ruído
+          # semelhante ao observado em bibliotecas JS minificadas.
+          detect = ns["_detect_sensitive_data"]
+          real = detect(
+              "https://192.0.2.10/data/users.php",
+              "user: admin hash: 21232f297a57a5a743894a0e4a801fc3",
+          )
+          assert any(x.get("kind") == "credential_pair" for x in real), real
+
+          noise = detect(
+              "https://192.0.2.10/assets/js/jquery-3.6.0.min.js",
+              'var password=!0; var token="W"; var secret="'.concat(A,'";',
+          )
+          assert not noise, noise
+
+          # 6) Identificação do httpx da ProjectDiscovery não deve aceitar
+          # apenas qualquer executável chamado httpx.
+          with tempfile.TemporaryDirectory() as tmp:
+              good = Path(tmp) / "good-httpx"
+              good.write_text(
+                  "#!/bin/sh\necho 'httpx is a fast and multi-purpose HTTP toolkit'\necho '-silent -status-code'\n",
+                  encoding="utf-8",
+              )
+              good.chmod(0o755)
+              bad = Path(tmp) / "bad-httpx"
+              bad.write_text(
+                  "#!/bin/sh\necho 'Python HTTPX client CLI'\n",
+                  encoding="utf-8",
+              )
+              bad.chmod(0o755)
+              assert ns["_looks_like_projectdiscovery_httpx"](good)
+              assert not ns["_looks_like_projectdiscovery_httpx"](bad)
+
+          print("v2.2.0 regression tests: OK")
+          PY
+
+      - name: Build release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="$(sha256sum l1ght_recon.py | awk '{print $1}')"
+          cp l1ght_recon.py releases/l1ght_recon_v2_2_0.py
+          cat > releases/latest.json <<JSON
+          {
+            "version": "2.2.0",
+            "channel": "stable",
+            "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_2_0.py",
+            "sha256": "$SHA",
+            "notes": "FFUF com baseline conservadora de wildcard/soft-404, eliminação de redirecionadores HTTP→HTTPS falsos positivos, fuzzing direto de bases confiáveis, redução de ruído em segredos de JS minificado e instalador resiliente para Kali/Debian/Ubuntu."
+          }
+          JSON
+          rm -f .github/workflows/publish-v220.yml
+
+      - name: Commit validated release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Publish L1ght Recon v2.2.0"
+          git push origin HEAD:publish-v2.2.0

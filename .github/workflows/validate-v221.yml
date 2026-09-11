@@ -22,6 +22,7 @@ jobs:
           grep -q 'python3-requests python3-bs4' setup_tools.sh
           grep -q 'uninstall-no-record-file' setup_tools.sh
           grep -q -- '-status-code' setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
           python3 - <<'PY'
           import runpy
           ns = runpy.run_path("l1ght_recon.py")

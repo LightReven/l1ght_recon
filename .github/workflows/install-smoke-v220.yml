@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euxo pipefail
           cd /tmp/l1ght_recon
-          sudo ./setup_tools.sh
+          sudo bash setup_tools.sh
       - name: Verify runtime
         run: |
           set -euxo pipefail
@@ -49,7 +49,7 @@ jobs:
         run: |
           set -eux
           cd /tmp/l1ght_recon
-          ./setup_tools.sh
+          bash setup_tools.sh
       - name: Verify runtime
         run: |
           set -eux

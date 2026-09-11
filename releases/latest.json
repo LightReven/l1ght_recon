@@ -1,7 +1,7 @@
 {
-  "version": "2.2.0",
+  "version": "2.2.1",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_2_0.py",
-  "sha256": "393e644b36a67eaaf8df4bef013375b0a9fa31fe7b5be8f045c7175a228add51",
-  "notes": "FFUF com baseline conservadora de wildcard/soft-404, eliminação de redirecionadores HTTP→HTTPS falsos positivos, fuzzing direto de bases confiáveis, redução de ruído em segredos de JS minificado e instalador resiliente para Kali/Debian/Ubuntu."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_2_1.py",
+  "sha256": "c96e699b4b8e30c2df84f3143e9d58d027289fb6a427b91e125735abe4c61b49",
+  "notes": "Correção de instalação em Kali/Debian/Ubuntu: preserva pacotes Python do APT, evita uninstall-no-record-file, valida corretamente o httpx da ProjectDiscovery, usa fallbacks binários oficiais e prepara somente a parte necessária da SecLists. Mantém as correções de FFUF da v2.2.0."
 }

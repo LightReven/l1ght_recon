@@ -5,14 +5,14 @@
 ## Instalação
 
 ```bash
-git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && chmod +x setup_tools.sh && sudo ./setup_tools.sh
+git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && sudo bash setup_tools.sh
 ```
 
 O instalador valida as ferramentas pelo executável correto, não apenas pelo nome. Isso é especialmente importante no Kali: o pacote `python3-httpx` também pode fornecer um comando chamado `httpx`, enquanto a ferramenta usada pelo L1ght Recon é o **httpx da ProjectDiscovery**, empacotado pelo Kali como `httpx-toolkit`.
 
-Em Kali o setup prioriza os pacotes da própria distribuição (`httpx-toolkit`, `katana` e `nuclei`). Em Debian/Ubuntu e derivados, quando esses pacotes não estão disponíveis, o instalador usa os binários pré-compilados oficiais dos projetos. O fluxo suporta Linux x86_64/amd64 e arm64/aarch64, instala as demais dependências individualmente e aplica fallbacks para FFUF, WAFW00F, Nikto, WhatWeb e SecLists quando necessário.
+Em Kali o setup prioriza os pacotes da própria distribuição (`httpx-toolkit`, `katana` e `nuclei`). Em Debian/Ubuntu e derivados, quando esses pacotes não estão disponíveis, o instalador usa os binários pré-compilados oficiais dos projetos. O fluxo suporta Linux x86_64/amd64 e arm64/aarch64, preserva bibliotecas Python já fornecidas pelo APT quando compatíveis e aplica fallbacks para FFUF, WAFW00F, Nikto, WhatWeb e SecLists quando necessário.
 
-O caminho padrão da SecLists também é normalizado para `/usr/share/wordlists/seclists`, evitando instalações em que a ferramenta existe em `/usr/share/seclists` mas a wordlist padrão não é localizada.
+O caminho padrão da SecLists também é normalizado para `/usr/share/wordlists/seclists`. Quando as listas necessárias não existem, o setup baixa somente `Discovery/Web-Content` e `Discovery/DNS`, evitando instalar o pacote completo da SecLists apenas para usar as wordlists do L1ght Recon.
 
 Na primeira execução real, o L1ght Recon ainda revalida as dependências. Se algo estiver ausente e houver um terminal interativo, ele pode solicitar `sudo` automaticamente para executar `setup_tools.sh`.
 
@@ -58,6 +58,10 @@ Bases obtidas de sementes confiáveis, como `/pdf_generator/`, são sempre fuzza
 Os JSON/logs brutos do FFUF permanecem preservados, enquanto o terminal, o `ffuf_content.json` consolidado e o HTML exibem os resultados após a validação. O arquivo `ffuf_filter_summary.json` registra as baselines e a quantidade de respostas descartadas.
 
 Limites concorrentes por ferramenta pesada continuam ativos e os resultados de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
+
+## Versão 2.2.1
+
+A versão 2.2.1 corrige a instalação em sistemas Kali/Debian/Ubuntu limpos: evita que o pip tente substituir o `requests` instalado pelo APT, valida o httpx da ProjectDiscovery pelas flags do CLI, usa binários oficiais como fallback e prepara apenas a parte necessária da SecLists. A enumeração FFUF permanece com as correções da 2.2.0.
 
 ## Versão 2.2.0
 

@@ -5,12 +5,18 @@
 ## Instalação
 
 ```bash
-git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && python3 l1ght_recon.py -h
+git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && chmod +x setup_tools.sh && sudo ./setup_tools.sh
 ```
 
-Na primeira execução real, o L1ght Recon verifica as dependências Python e as ferramentas externas. Se algo obrigatório estiver ausente, tenta executar automaticamente `requirements.txt` e `setup_tools.sh`. Em Kali/Debian, a instalação de pacotes pode solicitar privilégios administrativos.
+O instalador valida as ferramentas pelo executável correto, não apenas pelo nome. Isso é especialmente importante no Kali: o pacote `python3-httpx` também pode fornecer um comando chamado `httpx`, enquanto a ferramenta usada pelo L1ght Recon é o **httpx da ProjectDiscovery**, empacotado pelo Kali como `httpx-toolkit`.
 
-O script também registra automaticamente o comando `l1ght_recon` no PATH. Depois do primeiro preparo do ambiente, o uso normal fica assim:
+Em Kali o setup prioriza os pacotes da própria distribuição (`httpx-toolkit`, `katana` e `nuclei`). Em Debian/Ubuntu e derivados, quando esses pacotes não estão disponíveis, o instalador usa os binários pré-compilados oficiais dos projetos. O fluxo suporta Linux x86_64/amd64 e arm64/aarch64, instala as demais dependências individualmente e aplica fallbacks para FFUF, WAFW00F, Nikto, WhatWeb e SecLists quando necessário.
+
+O caminho padrão da SecLists também é normalizado para `/usr/share/wordlists/seclists`, evitando instalações em que a ferramenta existe em `/usr/share/seclists` mas a wordlist padrão não é localizada.
+
+Na primeira execução real, o L1ght Recon ainda revalida as dependências. Se algo estiver ausente e houver um terminal interativo, ele pode solicitar `sudo` automaticamente para executar `setup_tools.sh`.
+
+O script registra automaticamente o comando `l1ght_recon` no PATH. Depois do preparo do ambiente, o uso normal fica assim:
 
 ```bash
 l1ght_recon -t 192.168.92.206
@@ -45,7 +51,17 @@ O relatório final é gerado em **HTML**. Ele contém detalhes adicionais que n�
 
 ## Otimizações do fluxo
 
-A enumeração Web utiliza sementes canonicalizadas, FFUF adaptativo para evitar fuzzing duplicado de caminhos já cobertos pela recursão, limites concorrentes por ferramenta pesada e apresentação progressiva de FFUF, Nuclei e Nikto. Resultados de tarefas de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
+A enumeração Web utiliza sementes canonicalizadas, baseline própria de wildcard/soft-404 antes do FFUF, filtros conservadores de respostas genéricas e apresentação progressiva de FFUF, Nuclei e Nikto. Redirecionadores canônicos HTTP→HTTPS que preservam qualquer path são reconhecidos antes do fuzzing e não geram milhares de resultados falsos.
+
+Bases obtidas de sementes confiáveis, como `/pdf_generator/`, são sempre fuzzadas diretamente. O L1ght Recon não considera mais uma base totalmente coberta apenas porque uma recursão pai encontrou algum filho abaixo dela; isso melhora a descoberta de diretórios simples em aplicações aninhadas.
+
+Os JSON/logs brutos do FFUF permanecem preservados, enquanto o terminal, o `ffuf_content.json` consolidado e o HTML exibem os resultados após a validação. O arquivo `ffuf_filter_summary.json` registra as baselines e a quantidade de respostas descartadas.
+
+Limites concorrentes por ferramenta pesada continuam ativos e os resultados de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
+
+## Versão 2.2.0
+
+A versão 2.2.0 concentra-se em confiabilidade do content discovery e instalação: validação adicional de wildcard/soft-404 no FFUF, eliminação de redirecionamentos HTTP→HTTPS falsos positivos, fuzzing direto de todas as bases confiáveis, redução de falsos positivos do detector de segredos em JavaScript minificado e um instalador resiliente que diferencia o httpx da ProjectDiscovery do python-httpx.
 
 ## Versão 2.0.0
 

@@ -1,7 +1,7 @@
 {
-  "version": "2.1.1",
+  "version": "2.2.0",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_1_1.py",
-  "sha256": "49787afab9f5127e0cd97e0d0e673a5209e5f2edefd972bee7f414d98e4ec257",
-  "notes": "Corrige correlação de múltiplos pares de credencial e adiciona client_id/client_secret ao detector contextual da série 2.1."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_2_0.py",
+  "sha256": "393e644b36a67eaaf8df4bef013375b0a9fa31fe7b5be8f045c7175a228add51",
+  "notes": "FFUF com baseline conservadora de wildcard/soft-404, eliminação de redirecionadores HTTP→HTTPS falsos positivos, fuzzing direto de bases confiáveis, redução de ruído em segredos de JS minificado e instalador resiliente para Kali/Debian/Ubuntu."
 }

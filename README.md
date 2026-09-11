@@ -5,7 +5,7 @@
 ## Instalação
 
 ```bash
-git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && chmod +x setup_tools.sh && sudo ./setup_tools.sh
+git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && sudo bash setup_tools.sh
 ```
 
 O instalador valida as ferramentas pelo executável correto, não apenas pelo nome. Isso é especialmente importante no Kali: o pacote `python3-httpx` também pode fornecer um comando chamado `httpx`, enquanto a ferramenta usada pelo L1ght Recon é o **httpx da ProjectDiscovery**, empacotado pelo Kali como `httpx-toolkit`.

@@ -123,8 +123,9 @@ jobs:
                   }]
               return []
 
-          ns["_ffuf_baseline_profile"] = fake_baseline
-          ns["_run_ffuf_json_stream"] = fake_stream
+          ffuf_globals = ns["run_ffuf_content"].__globals__
+          ffuf_globals["_ffuf_baseline_profile"] = fake_baseline
+          ffuf_globals["_run_ffuf_json_stream"] = fake_stream
           with tempfile.TemporaryDirectory() as tmp:
               wl = Path(tmp) / "words.txt"
               wl.write_text("contents\n", encoding="utf-8")
@@ -162,8 +163,8 @@ jobs:
           def should_not_run(*args, **kwargs):
               called.append(True)
               return []
-          ns["_ffuf_baseline_profile"] = alias_baseline
-          ns["_run_ffuf_json_stream"] = should_not_run
+          ffuf_globals["_ffuf_baseline_profile"] = alias_baseline
+          ffuf_globals["_run_ffuf_json_stream"] = should_not_run
           with tempfile.TemporaryDirectory() as tmp:
               wl = Path(tmp) / "words.txt"
               wl.write_text("admin\n", encoding="utf-8")

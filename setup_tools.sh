@@ -82,12 +82,13 @@ BASE_PACKAGES=(
 )
 
 for pkg in "${BASE_PACKAGES[@]}"; do
-    if ! apt_install_if_available "${pkg}"; then
-        rc=$?
+    apt_install_if_available "${pkg}"
+    rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
         if [[ "${rc}" -eq 2 ]]; then
             warn "Pacote APT não disponível nesta distribuição: ${pkg}"
         else
-            warn "Falha ao instalar ${pkg}; o setup continuará e tentará validar/fazer fallback no final."
+            warn "Falha ao instalar ${pkg}; o setup continuará e tentará fallback no final."
         fi
     fi
 done
@@ -144,7 +145,6 @@ github_latest_binary() {
     local tmpdir asset_url archive
 
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "${tmpdir:-}"' RETURN
 
     asset_url="$(
         TOOL_REPO="${repo}" TOOL_ARCH="${PD_ARCH}" python3 - <<'PY'
@@ -183,7 +183,10 @@ for pattern in patterns:
             raise SystemExit(0)
 raise SystemExit(2)
 PY
-    )" || return 1
+    )" || {
+        rm -rf "${tmpdir}"
+        return 1
+    }
 
     archive="${tmpdir}/asset"
     info "Baixando binário oficial de ${tool} para linux/${PD_ARCH}..."
@@ -276,13 +279,28 @@ if ! command -v ffuf >/dev/null 2>&1; then
     github_latest_binary ffuf ffuf/ffuf ffuf ||         fail "Não foi possível instalar o FFUF."
 fi
 
-# Nikto/WhatWeb: apt normalmente resolve em Kali/Debian/Ubuntu.
-# Mantemos mensagens explícitas quando a distro não oferece o pacote.
+install_git_tool() {
+    local name="$1"
+    local repo="$2"
+    local directory="$3"
+    local relative_binary="$4"
+
+    rm -rf "${directory}"
+    info "Instalando ${name} a partir do repositório oficial..."
+    retry 2 git clone --depth 1 "${repo}" "${directory}" || return 1
+    [[ -f "${directory}/${relative_binary}" ]] || return 1
+    chmod +x "${directory}/${relative_binary}"
+    ln -sfn "${directory}/${relative_binary}" "/usr/local/bin/${name}"
+}
+
 if ! command -v nikto >/dev/null 2>&1; then
-    warn "Nikto continua ausente. Verifique se os repositórios da distribuição estão habilitados."
+    install_git_tool nikto https://github.com/sullo/nikto.git /opt/nikto program/nikto.pl || \
+        warn "Nikto continua ausente após o fallback."
 fi
+
 if ! command -v whatweb >/dev/null 2>&1; then
-    warn "WhatWeb continua ausente. Verifique se os repositórios da distribuição estão habilitados."
+    install_git_tool whatweb https://github.com/urbanadventurer/WhatWeb.git /opt/whatweb whatweb || \
+        warn "WhatWeb continua ausente após o fallback."
 fi
 
 if command -v nuclei >/dev/null 2>&1; then

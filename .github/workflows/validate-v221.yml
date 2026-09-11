@@ -68,7 +68,8 @@ jobs:
           cd /tmp/l1ght_recon
           grep -q 'VERSION = "2.2.1"' l1ght_recon.py
           l1ght_recon -h >/tmp/help.txt
-          httpx -h 2>&1 | grep -q -- '-status-code'
+          httpx -h >/tmp/httpx-help.txt 2>&1 || true
+          grep -q -- '-status-code' /tmp/httpx-help.txt
           katana -version
           nuclei -version
           ffuf -V
@@ -107,7 +108,8 @@ jobs:
           cd /tmp/l1ght_recon
           grep -q 'VERSION = "2.2.1"' l1ght_recon.py
           l1ght_recon -h >/tmp/help.txt
-          httpx -h 2>&1 | grep -q -- '-status-code'
+          httpx -h >/tmp/httpx-help.txt 2>&1 || true
+          grep -q -- '-status-code' /tmp/httpx-help.txt
           katana -version
           nuclei -version
           ffuf -V

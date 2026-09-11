@@ -5197,7 +5197,7 @@ def _shannon_entropy(value):
 
 
 def _looks_concrete_sensitive_value(value):
-    text = str(value or "").strip().strip('"\\'')
+    text = str(value or "").strip().strip(chr(34) + chr(39))
     if not text:
         return False
 

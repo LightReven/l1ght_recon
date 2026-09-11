@@ -5221,9 +5221,6 @@ def _looks_concrete_sensitive_value(value):
     if any(token in lowered for token in non_values):
         return False
 
-    if len(text) < 20 and re.search(r"[(){};]|&&|\\|\\||===?|!==?|\\+\\+", text):
-        return False
-
     if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_.$-]*", text) and lowered.endswith(
         ("value", "field", "input", "variable", "var", "element")
     ):

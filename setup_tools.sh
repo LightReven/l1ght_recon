@@ -114,8 +114,16 @@ retry 2 install_python_requirements || fail "Falha ao instalar requirements.txt.
 
 is_pd_httpx() {
     local bin="${1:-}"
+    local help_text
     [[ -n "${bin}" && -x "${bin}" ]] || return 1
-    "${bin}" -h 2>&1 | grep -qi 'fast and multi-purpose HTTP toolkit'
+
+    help_text="$("${bin}" -h 2>&1 || true)"
+
+    # Valida por flags características do httpx da ProjectDiscovery em vez
+    # de depender de uma frase exata do banner, que muda entre releases.
+    grep -q -- '-status-code' <<<"${help_text}" &&
+    grep -q -- '-silent' <<<"${help_text}" &&
+    grep -q -- '-tech-detect' <<<"${help_text}"
 }
 
 normalize_httpx_command() {

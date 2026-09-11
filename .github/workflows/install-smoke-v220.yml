@@ -13,7 +13,7 @@ jobs:
       - name: Clone public main
         run: |
           set -euxo pipefail
-          git clone --depth 1 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+          git clone --depth 1 --branch publish-v2.2.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
       - name: Run installer
         run: |
           set -euxo pipefail
@@ -24,7 +24,7 @@ jobs:
           set -euxo pipefail
           l1ght_recon -h >/tmp/help.txt
           grep -q '2.2.0' /tmp/help.txt
-          httpx -h 2>&1 | grep -qi 'fast and multi-purpose HTTP toolkit'
+          httpx -h 2>&1 | grep -q -- '-status-code'
           katana -version
           nuclei -version
           ffuf -V
@@ -44,7 +44,7 @@ jobs:
           set -eux
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
-          git clone --depth 1 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+          git clone --depth 1 --branch publish-v2.2.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
       - name: Run installer
         run: |
           set -eux
@@ -55,7 +55,7 @@ jobs:
           set -eux
           l1ght_recon -h >/tmp/help.txt
           grep -q '2.2.0' /tmp/help.txt
-          httpx -h 2>&1 | grep -qi 'fast and multi-purpose HTTP toolkit'
+          httpx -h 2>&1 | grep -q -- '-status-code'
           katana -version
           nuclei -version
           ffuf -V

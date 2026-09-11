@@ -194,7 +194,7 @@ jobs:
 
           noise = detect(
               "https://192.0.2.10/assets/js/jquery-3.6.0.min.js",
-              'var password=!0; var token="W"; var secret="'.concat(A,'";',
+              "var password=!0; var token='W'; var secret='abc';",
           )
           assert not noise, noise
 

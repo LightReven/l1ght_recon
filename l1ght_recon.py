@@ -67,7 +67,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Scanning & Enumeration
 # ============================================================
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 AUTHOR = "Rafael Ademilton"
 HANDLE = "l1ghtr3v3n"
 

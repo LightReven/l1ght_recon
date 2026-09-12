@@ -4089,7 +4089,7 @@ def run_ffuf_content(
         warning(f"Wordlist de conteúdo não encontrada: {wordlist}")
         return []
 
-    max_bases = 24 if full_mode else 12
+    max_bases = 8 if FAST_MODE else (24 if full_mode else 12)
     fuzz_bases = ffuf_bases_from_seeds(
         service, seed_urls or [service["url"]], max_bases=max_bases
     )
@@ -4722,7 +4722,7 @@ def run_shellshock_enum(host, service, service_dir, discovered_urls=None):
         ]
         stdout, stderr, code = run_command(command, activity=None)
         output = "\n".join(part for part in [stdout, stderr] if part)
-        if not re.search(r"State:\s*VULNERABLE|\bVULNERABLE:\s*", output, re.I):
+        if not re.search(r"State:\s*VULNERABLE(?:\s*\(Exploitable\))?", output, re.I):
             continue
 
         positives.append({
@@ -6884,7 +6884,8 @@ def print_final_compilation(
     print(f"Portas TCP abertas.......: {len(open_ports)}")
     print(f"Portas UDP abertas.......: {len(udp_ports)}")
     print(f"UDP open|filtered........: {len(udp_candidates)}")
-    print(f"Perfil...................: {'full' if args.full else 'padrão'}")
+    profile_name = "fast" if args.fast else ("full" if args.full else "padrão")
+    print(f"Perfil...................: {profile_name}")
     print(f"UDP top ports............: {args.udp_top}")
     print(f"Serviços enumerados......: {len(service_results)}")
     print(f"Serviços Web.............: {len(web_services)}")
@@ -7060,7 +7061,8 @@ Fluxo:
         metavar="N",
         help=(
             "Quantidade de portas UDP mais frequentes a testar.\n"
-            f"Padrão: {DEFAULT_UDP_TOP_PORTS}; --full: {FULL_UDP_TOP_PORTS}; máximo: {MAX_UDP_TOP_PORTS}."
+            f"Padrão: {DEFAULT_UDP_TOP_PORTS}; --fast: {FAST_UDP_TOP_PORTS}; "
+            f"--full: {FULL_UDP_TOP_PORTS}; máximo: {MAX_UDP_TOP_PORTS}."
         ),
     )
     parser.add_argument(
@@ -7838,12 +7840,14 @@ Fluxo:
             if not is_noise_url(url)
         }
 
-        shellshock_result = run_shellshock_enum(
-            host,
-            service,
-            service_dir,
-            discovered_urls=discovered_urls,
-        )
+        shellshock_result = None
+        if not args.skip_service_enum:
+            shellshock_result = run_shellshock_enum(
+                host,
+                service,
+                service_dir,
+                discovered_urls=discovered_urls,
+            )
         if shellshock_result:
             shellshock_results.append(shellshock_result)
             warning(

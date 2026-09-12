@@ -1,0 +1,216 @@
+name: Validate L1ght Recon v2.3.0
+
+on:
+  push:
+    branches:
+      - publish-v2.3.0
+
+jobs:
+  regressions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and functional regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
+          python3 l1ght_recon.py -h >/tmp/help.txt
+          grep -q -- '--fast' /tmp/help.txt
+          grep -q 'VERSION = "2.3.0"' l1ght_recon.py
+          grep -q 'FAST_CONTENT_WORDLIST' l1ght_recon.py
+          grep -q 'mysql-empty-password' l1ght_recon.py
+          grep -q 'http-shellshock' l1ght_recon.py
+          grep -q -- '--ignore-installed' setup_tools.sh
+          grep -q 'WSL detectado' setup_tools.sh
+          grep -q 'common.txt' setup_tools.sh
+
+          python3 - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import runpy
+
+          ns = runpy.run_path("l1ght_recon.py")
+          assert ns["VERSION"] == "2.3.0"
+
+          # FAST: no máximo duas extensões e seleção contextual.
+          php = ns["resolve_ffuf_extensions"](
+              None,
+              [{"service":"http","product":"Apache","version":""}],
+              [{"server":"Apache","tech":["PHP"],"title":""}],
+              fast_mode=True,
+          )
+          assert php == ".php,.txt", php
+          explicit = ns["resolve_ffuf_extensions"](
+              "php,html,txt",
+              [], [],
+              fast_mode=True,
+          )
+          assert explicit == ".php,.html", explicit
+
+          # Shellshock: negativo não retorna nada; positivo retorna somente
+          # quando o NSE declara explicitamente VULNERABLE.
+          g = ns["run_shellshock_enum"].__globals__
+          original_run = g["run_command"]
+          original_fast = g["FAST_MODE"]
+          original_scan = g["_nmap_tcp_scan_type"]
+          try:
+              g["FAST_MODE"] = True
+              g["_nmap_tcp_scan_type"] = lambda: "-sT"
+
+              def negative(command, activity=None, **kwargs):
+                  return ("80/tcp open http\n|_http-shellshock: ERROR: Script execution failed", "", 0)
+
+              g["run_command"] = negative
+              with tempfile.TemporaryDirectory() as tmp:
+                  result = ns["run_shellshock_enum"](
+                      "192.0.2.10",
+                      {"port":80,"scheme":"http","server":"Apache"},
+                      Path(tmp),
+                      ["http://192.0.2.10/cgi-bin/test.cgi"],
+                  )
+              assert result is None, result
+
+              def positive(command, activity=None, **kwargs):
+                  return (
+                      "80/tcp open http\n| http-shellshock:\n"
+                      "|   VULNERABLE:\n"
+                      "|   HTTP Shellshock vulnerability\n"
+                      "|   State: VULNERABLE (Exploitable)\n",
+                      "",
+                      0,
+                  )
+
+              g["run_command"] = positive
+              with tempfile.TemporaryDirectory() as tmp:
+                  result = ns["run_shellshock_enum"](
+                      "192.0.2.10",
+                      {"port":80,"scheme":"http","server":"Apache"},
+                      Path(tmp),
+                      ["http://192.0.2.10/cgi-bin/test.cgi"],
+                  )
+              assert result and result["profile"] == "SHELLSHOCK", result
+              assert result["scripts"], result
+          finally:
+              g["run_command"] = original_run
+              g["FAST_MODE"] = original_fast
+              g["_nmap_tcp_scan_type"] = original_scan
+
+          # MySQL: mysql-empty-password faz parte do perfil e resultado
+          # negativo não entra no relatório; positivo entra.
+          mysql_profile = next(x for x in ns["SERVICE_PROFILES"] if x["name"] == "MySQL")
+          assert "mysql-empty-password" in mysql_profile["base"]
+
+          service_globals = ns["run_one_service_enum"].__globals__
+          original_parse = service_globals["parse_nmap_xml"]
+          original_run = service_globals["run_command"]
+          original_search = service_globals["search_public_exploits"]
+          original_scan = service_globals["_nmap_tcp_scan_type"]
+          try:
+              service_globals["run_command"] = lambda *a, **k: ("", "", 0)
+              service_globals["search_public_exploits"] = lambda *a, **k: []
+              service_globals["_nmap_tcp_scan_type"] = lambda: "-sT"
+
+              with tempfile.TemporaryDirectory() as tmp:
+                  service_dir = Path(tmp) / "service_enum"
+                  service_dir.mkdir()
+                  (service_dir / "tcp_3306.xml").write_text("<nmaprun/>")
+                  service_globals["parse_nmap_xml"] = lambda *a, **k: [{
+                      "port":3306,"protocol":"tcp","service":"mysql",
+                      "product":"MariaDB","version":"10.4","extrainfo":"",
+                      "scripts":[
+                          {"id":"mysql-info","output":"Version: 10.4"},
+                          {"id":"mysql-empty-password","output":"No empty passwords found"},
+                      ],
+                  }]
+                  result = ns["run_one_service_enum"](
+                      "192.0.2.10",
+                      {"port":3306,"protocol":"tcp","service":"mysql"},
+                      Path(tmp),
+                  )
+                  ids = [x["id"] for x in result["scripts"]]
+                  assert "mysql-empty-password" not in ids, result
+
+              with tempfile.TemporaryDirectory() as tmp:
+                  service_dir = Path(tmp) / "service_enum"
+                  service_dir.mkdir()
+                  (service_dir / "tcp_3306.xml").write_text("<nmaprun/>")
+                  service_globals["parse_nmap_xml"] = lambda *a, **k: [{
+                      "port":3306,"protocol":"tcp","service":"mysql",
+                      "product":"MariaDB","version":"10.4","extrainfo":"",
+                      "scripts":[
+                          {"id":"mysql-empty-password","output":"anonymous account has empty password\nroot account has empty password"},
+                      ],
+                  }]
+                  result = ns["run_one_service_enum"](
+                      "192.0.2.10",
+                      {"port":3306,"protocol":"tcp","service":"mysql"},
+                      Path(tmp),
+                  )
+                  ids = [x["id"] for x in result["scripts"]]
+                  assert "mysql-empty-password" in ids, result
+          finally:
+              service_globals["parse_nmap_xml"] = original_parse
+              service_globals["run_command"] = original_run
+              service_globals["search_public_exploits"] = original_search
+              service_globals["_nmap_tcp_scan_type"] = original_scan
+
+          print("v2.3.0 regressions: OK")
+          PY
+
+  ubuntu-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Clone branch
+        run: git clone --depth 1 --branch publish-v2.3.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+      - name: Install
+        run: cd /tmp/l1ght_recon && sudo bash setup_tools.sh
+      - name: Verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          l1ght_recon -h >/tmp/help.txt
+          grep -q -- '--fast' /tmp/help.txt
+          httpx -h >/tmp/httpx.txt 2>&1 || true
+          grep -q -- '-status-code' /tmp/httpx.txt
+          katana -version
+          nuclei -version
+          ffuf -V
+          nmap --script-help http-shellshock,mysql-empty-password >/tmp/nse.txt
+          grep -q 'http-shellshock' /tmp/nse.txt
+          grep -q 'mysql-empty-password' /tmp/nse.txt
+          test -f /usr/share/wordlists/seclists/Discovery/Web-Content/common.txt
+          test -f /usr/share/wordlists/seclists/Discovery/Web-Content/big.txt
+
+  kali-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: kalilinux/kali-rolling:latest
+    steps:
+      - name: Bootstrap
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
+          git clone --depth 1 --branch publish-v2.3.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+      - name: Install
+        run: cd /tmp/l1ght_recon && bash setup_tools.sh
+      - name: Verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          l1ght_recon -h >/tmp/help.txt
+          grep -q -- '--fast' /tmp/help.txt
+          httpx -h >/tmp/httpx.txt 2>&1 || true
+          grep -q -- '-status-code' /tmp/httpx.txt
+          katana -version
+          nuclei -version
+          ffuf -V
+          nmap --script-help http-shellshock,mysql-empty-password >/tmp/nse.txt
+          grep -q 'http-shellshock' /tmp/nse.txt
+          grep -q 'mysql-empty-password' /tmp/nse.txt
+          test -f /usr/share/wordlists/seclists/Discovery/Web-Content/common.txt
+          test -f /usr/share/wordlists/seclists/Discovery/Web-Content/big.txt

@@ -1,7 +1,7 @@
 {
-  "version": "2.2.1",
+  "version": "2.3.0",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_2_1.py",
-  "sha256": "c96e699b4b8e30c2df84f3143e9d58d027289fb6a427b91e125735abe4c61b49",
-  "notes": "Correção de instalação em Kali/Debian/Ubuntu: preserva pacotes Python do APT, evita uninstall-no-record-file, valida corretamente o httpx da ProjectDiscovery, usa fallbacks binários oficiais e prepara somente a parte necessária da SecLists. Mantém as correções de FFUF da v2.2.0."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_3_0.py",
+  "sha256": "42c7bbc9974a4e678beb8b360e9a08ec5af6f600a4b765426060026dcefccfa5",
+  "notes": "Novo perfil --fast com Nmap top 2000 TCP, UDP top 100, FFUF common.txt depth 2 e até duas extensões, Nikto/Nuclei reduzidos; verificação Shellshock positiva-only; MySQL root/anonymous sem senha positiva-only; instalação reforçada para Kali/Ubuntu/WSL e ferramentas já existentes."
 }

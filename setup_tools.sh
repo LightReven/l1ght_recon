@@ -17,6 +17,17 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/l1ght_recon.py"
 REQ_FILE="${SCRIPT_DIR}/requirements.txt"
 
+# sudo pode aplicar secure_path e esconder ferramentas já instaladas pelo
+# usuário em ~/.local/bin ou ~/go/bin. Reinsere esses caminhos antes de
+# decidir que Katana/Nuclei/etc. estão ausentes.
+ORIGINAL_USER_HOME=""
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    ORIGINAL_USER_HOME="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6)"
+    if [[ -n "${ORIGINAL_USER_HOME}" ]]; then
+        export PATH="${ORIGINAL_USER_HOME}/.local/bin:${ORIGINAL_USER_HOME}/go/bin:${PATH}"
+    fi
+fi
+
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     repo_owner="$(stat -c '%U' "${SCRIPT_DIR}" 2>/dev/null || true)"
     if [[ "${repo_owner}" == "root" ]]; then
@@ -285,7 +296,11 @@ install_projectdiscovery_tool() {
             return 0
         fi
     elif command -v "${binary}" >/dev/null 2>&1; then
-        ok "${logical} já disponível em $(command -v "${binary}")"
+        existing="$(command -v "${binary}")"
+        ok "${logical} já disponível em ${existing}"
+        if [[ "${existing}" != "/usr/local/bin/${binary}" ]]; then
+            ln -sfn "${existing}" "/usr/local/bin/${binary}"
+        fi
         return 0
     fi
 

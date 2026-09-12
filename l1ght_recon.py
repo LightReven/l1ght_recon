@@ -67,7 +67,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Scanning & Enumeration
 # ============================================================
 
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 AUTHOR = "Rafael Ademilton"
 HANDLE = "l1ghtr3v3n"
 
@@ -85,6 +85,7 @@ CONSOLE_LOCK = threading.RLock()
 
 COMMAND_TIMEOUT = 0
 LOW_NOISE = False
+FAST_MODE = False
 TIMED_OUT_TASKS = []
 FFUF_PARTIAL_LOCK = threading.RLock()
 FFUF_PARTIAL_RESULTS = defaultdict(list)
@@ -97,12 +98,15 @@ WEB_TOOL_SEMAPHORES = {}
 TOOL_BINARIES = {}
 
 DEFAULT_UDP_TOP_PORTS = 200
+FAST_UDP_TOP_PORTS = 100
 FULL_UDP_TOP_PORTS = 400
 MAX_UDP_TOP_PORTS = 500
+FAST_TCP_TOP_PORTS = 2000
 UDP_PROGRESS_INTERVAL = 60
 
 
 DEFAULT_CONTENT_WORDLIST = "/usr/share/wordlists/seclists/Discovery/Web-Content/big.txt"
+FAST_CONTENT_WORDLIST = "/usr/share/wordlists/seclists/Discovery/Web-Content/common.txt"
 
 DEFAULT_VHOST_WORDLIST = (
     "/usr/share/seclists/Discovery/DNS/"
@@ -588,11 +592,11 @@ def metric_end(name, started, **details):
     )
 
 
-def configure_web_scheduler(full_mode=False):
+def configure_web_scheduler(full_mode=False, fast_mode=False):
     global WEB_TOOL_SEMAPHORES
     limits = {
-        "ffuf": 2 if full_mode else 1,
-        "nuclei": 2 if full_mode else 1,
+        "ffuf": 2 if (full_mode or fast_mode) else 1,
+        "nuclei": 2 if (full_mode or fast_mode) else 1,
         "nikto": 1,
     }
     WEB_TOOL_SEMAPHORES = {
@@ -602,7 +606,7 @@ def configure_web_scheduler(full_mode=False):
     _debug_log(
         "SCHEDULER",
         " ".join(f"{name}_max={limit}" for name, limit in limits.items())
-        + f" full={bool(full_mode)}",
+        + f" full={bool(full_mode)} fast={bool(fast_mode)}",
     )
 
 
@@ -937,11 +941,13 @@ def print_flow():
         "   " + command(
             f"nmap -sU --open --top-ports {DEFAULT_UDP_TOP_PORTS} -Pn -n TARGET -T4"
         ),
-        f"   --full usa {FULL_UDP_TOP_PORTS} portas UDP; --udp-top permite ajuste até {MAX_UDP_TOP_PORTS}.",
+        f"   --fast usa {FAST_UDP_TOP_PORTS}, --full usa {FULL_UDP_TOP_PORTS}; --udp-top permite ajuste até {MAX_UDP_TOP_PORTS}.",
         "",
         "5. Enumeração específica dos serviços encontrados",
         "   FTP, SSH, SMTP, DNS, RPC, SMB, SNMP, LDAP, RDP, NFS/mountd,",
         "   bancos, Redis, VNC, Telnet e banner genérico.",
+        "   MySQL inclui teste de root/anonymous com senha vazia e só reporta sucesso.",
+        "   Serviços Web recebem verificação Shellshock; só vulnerabilidades confirmadas aparecem.",
         "   RPC/NFS também usam rpcinfo/showmount/rpcclient quando disponíveis.",
         "",
         "6. Identificação das portas Web",
@@ -1450,6 +1456,16 @@ def parse_gnmap_open_ports(gnmap_file):
     return sorted(set(ports))
 
 
+def _is_privileged():
+    return not hasattr(os, "geteuid") or os.geteuid() == 0
+
+
+def _nmap_tcp_scan_type():
+    # SYN scan exige raw sockets no Linux. Usuários comuns continuam com
+    # cobertura TCP usando connect scan, o que melhora uso em WSL/desktop.
+    return "-sS" if _is_privileged() else "-sT"
+
+
 def run_nmap(host, output_dir):
     section("1. NMAP — DESCOBERTA TCP E ENUMERAÇÃO DETALHADA")
 
@@ -1457,19 +1473,29 @@ def run_nmap(host, output_dir):
     discovery_gnmap = output_dir / "nmap_discovery.gnmap"
 
     timing = "-T2" if LOW_NOISE else "-T4"
+    scan_type = _nmap_tcp_scan_type()
 
     discovery_command = [
         "nmap",
-        "-sS",
-        "-p-",
+        scan_type,
+    ]
+
+    if FAST_MODE:
+        discovery_command.extend(["--top-ports", str(FAST_TCP_TOP_PORTS)])
+    else:
+        discovery_command.append("-p-")
+
+    discovery_command.extend([
         "--open",
         "-Pn",
         "-n",
         host,
         timing,
-    ]
+    ])
 
-    if not LOW_NOISE:
+    if FAST_MODE:
+        discovery_command.extend(["--min-rate", "2500", "--max-retries", "1"])
+    elif not LOW_NOISE:
         discovery_command.extend(["--min-rate", "1000"])
 
     discovery_command.extend(
@@ -1485,13 +1511,14 @@ def run_nmap(host, output_dir):
         discovery_command,
         activity=(
             "Executando Nmap fase 1 — descoberta rápida de portas TCP abertas..."
+            if not FAST_MODE
+            else f"Executando Nmap FAST — top {FAST_TCP_TOP_PORTS} portas TCP..."
         ),
     )
 
     open_port_numbers = parse_gnmap_open_ports(discovery_gnmap)
 
     if not open_port_numbers:
-        # Preserve any visible partial result when Nmap timed out.
         partial_text = ""
         if discovery_normal.exists():
             partial_text = discovery_normal.read_text(
@@ -1527,7 +1554,7 @@ def run_nmap(host, output_dir):
 
     detailed_command = [
         "nmap",
-        "-sS",
+        scan_type,
         "-sV",
         "-v",
         "--open",
@@ -1539,7 +1566,9 @@ def run_nmap(host, output_dir):
         timing,
     ]
 
-    if LOW_NOISE:
+    if FAST_MODE:
+        detailed_command.extend(["--version-light", "--max-retries", "1"])
+    elif LOW_NOISE:
         detailed_command.append("--version-light")
     else:
         detailed_command.extend(["-sC", "-O", "--osscan-guess"])
@@ -1547,7 +1576,7 @@ def run_nmap(host, output_dir):
     detailed_command.extend(
         [
             "--script-timeout",
-            "60s",
+            "20s" if FAST_MODE else "60s",
             "-oN",
             normal_file,
             "-oX",
@@ -1560,6 +1589,8 @@ def run_nmap(host, output_dir):
         activity=(
             "Executando Nmap fase 2 — serviços, versões e scripts NSE "
             "somente nas portas TCP identificadas..."
+            if not FAST_MODE
+            else "Executando Nmap FAST fase 2 — identificação leve de serviços..."
         ),
     )
 
@@ -1814,7 +1845,7 @@ SERVICE_PROFILES = [
         "name": "MySQL",
         "ports": {3306},
         "names": {"mysql"},
-        "base": ["mysql-info"],
+        "base": ["mysql-info", "mysql-empty-password"],
         "extra": [],
     },
     {
@@ -1942,7 +1973,52 @@ def looks_like_windows_target(open_ports, web_services=None):
     return False
 
 
-def resolve_ffuf_extensions(user_value, open_ports, web_services):
+def _cap_extensions(value, maximum=2):
+    normalized = normalize_extensions(value)
+    if not normalized:
+        return ""
+    parts = [part for part in normalized.split(",") if part]
+    return ",".join(parts[:maximum])
+
+
+def resolve_ffuf_extensions(user_value, open_ports, web_services, fast_mode=False):
+    if fast_mode:
+        if user_value is not None:
+            return _cap_extensions(user_value, maximum=2)
+
+        blob = " ".join(
+            [
+                " ".join(
+                    [
+                        str(item.get("service") or ""),
+                        str(item.get("product") or ""),
+                        str(item.get("version") or ""),
+                    ]
+                )
+                for item in (open_ports or [])
+            ]
+            + [
+                " ".join(
+                    [
+                        str(service.get("server") or ""),
+                        " ".join(service.get("tech") or []),
+                        str(service.get("title") or ""),
+                    ]
+                )
+                for service in (web_services or [])
+            ]
+        ).lower()
+
+        if any(term in blob for term in ["asp.net", "iis", "aspx"]):
+            return ".aspx,.asp"
+        if any(term in blob for term in ["php", "apache"]):
+            return ".php,.txt"
+        if any(term in blob for term in ["tomcat", "jsp", "java"]):
+            return ".jsp,.txt"
+        if any(term in blob for term in ["node", "express", "javascript"]):
+            return ".js,.json"
+        return ".html,.txt"
+
     if user_value is not None:
         return normalize_extensions(user_value)
 
@@ -2009,13 +2085,23 @@ def _fallback_udp_states(normal_file):
 
 def run_udp_scan(host, output_dir, top_ports=DEFAULT_UDP_TOP_PORTS):
     started = metric_start("udp_scan", top_ports=top_ports)
+    if not _is_privileged():
+        _debug_log("UDP_SKIP", "raw-socket privileges unavailable")
+        warning(
+            "Scan UDP requer privilégios de raw socket neste sistema; "
+            "UDP será ignorado. Execute com sudo se quiser incluir essa etapa."
+        )
+        metric_end("udp_scan", started, open=0, open_filtered=0, skipped="privileges")
+        return {"top_ports": int(top_ports), "open": [], "open_filtered": []}
     normal_file = output_dir / "nmap_udp.txt"
     xml_file = output_dir / "nmap_udp.xml"
     timing = "-T2" if LOW_NOISE else "-T4"
 
     command = [
         "nmap", "-sU", "--open", "--top-ports", str(top_ports),
-        "--reason", "-Pn", "-n", host, timing, "--script-timeout", "45s",
+        "--reason", "-Pn", "-n", host, timing,
+        *(["--max-retries", "1"] if FAST_MODE else []),
+        "--script-timeout", "20s" if FAST_MODE else "45s",
         "-oN", normal_file, "-oX", xml_file,
     ]
     run_command(command, activity=None)
@@ -2084,7 +2170,7 @@ def run_one_service_enum(host, item, output_dir):
 
     scripts = list(profile["base"])
 
-    if not LOW_NOISE:
+    if not LOW_NOISE and not FAST_MODE:
         scripts.extend(profile["extra"])
 
     scripts = list(dict.fromkeys(script for script in scripts if script))
@@ -2110,10 +2196,13 @@ def run_one_service_enum(host, item, output_dir):
         "-sV",
     ]
 
+    if FAST_MODE:
+        command.extend(["--version-light", "--max-retries", "1"])
+
     if protocol == "udp":
         command.append("-sU")
     else:
-        command.append("-sS")
+        command.append(_nmap_tcp_scan_type())
 
     command.extend(
         [
@@ -2122,7 +2211,7 @@ def run_one_service_enum(host, item, output_dir):
             "--script",
             ",".join(scripts),
             "--script-timeout",
-            "45s",
+            "20s" if FAST_MODE else "45s",
             host,
             timing,
             "-oN",
@@ -2144,6 +2233,18 @@ def run_one_service_enum(host, item, output_dir):
     product = result_item.get("product") or ""
     version = result_item.get("version") or ""
 
+    scripts_out = result_item.get("scripts") or []
+    if profile["name"] == "MySQL":
+        filtered = []
+        for script in scripts_out:
+            if script.get("id") != "mysql-empty-password":
+                filtered.append(script)
+                continue
+            output = str(script.get("output") or "")
+            if re.search(r"(root|anonymous) account has empty password", output, re.I):
+                filtered.append(script)
+        scripts_out = filtered
+
     public_exploits = search_public_exploits(
         product,
         version,
@@ -2158,7 +2259,7 @@ def run_one_service_enum(host, item, output_dir):
         "service": result_item.get("service") or item.get("service") or "",
         "product": product,
         "version": version,
-        "scripts": result_item.get("scripts") or [],
+        "scripts": scripts_out,
         "public_exploits": public_exploits,
         "raw_file": str(normal_file),
     }
@@ -2170,15 +2271,15 @@ def run_smb_service_enum(host, items, output_dir):
     service_dir = output_dir / "service_enum"
     service_dir.mkdir(parents=True, exist_ok=True)
     scripts = list(profile["base"])
-    if not LOW_NOISE:
+    if not LOW_NOISE and not FAST_MODE:
         scripts.extend(profile["extra"])
     scripts = list(dict.fromkeys(s for s in scripts if s))
     normal_file = service_dir / "tcp_smb_139_445.txt"
     xml_file = service_dir / "tcp_smb_139_445.xml"
     timing = "-T2" if LOW_NOISE else "-T4"
     command = [
-        "nmap", "-Pn", "-n", "-sV", "-sS", "-p", ",".join(map(str, ports)),
-        "--script", ",".join(scripts), "--script-timeout", "45s",
+        "nmap", "-Pn", "-n", "-sV", _nmap_tcp_scan_type(), "-p", ",".join(map(str, ports)),
+        "--script", ",".join(scripts), "--script-timeout", "20s" if FAST_MODE else "45s",
         host, timing, "-oN", normal_file, "-oX", xml_file,
     ]
     run_command(command, activity=None)
@@ -2359,6 +2460,11 @@ def print_service_enumeration(results):
         for script in scripts:
             script_id = script.get("id") or "NSE"
             lines = format_service_script_lines(profile, script)
+
+            if script_id == "mysql-empty-password":
+                print(f"  {RED}[!] Login MySQL sem senha aceito:{RESET}")
+            elif script_id.startswith("http-shellshock"):
+                print(f"  {RED}[!] Shellshock confirmado como vulnerável:{RESET}")
 
             print(f"  [{script_id}]")
 
@@ -4048,6 +4154,8 @@ def run_ffuf_content(
             command.extend(["-maxtime", str(COMMAND_TIMEOUT)])
         if LOW_NOISE:
             command.extend(["-rate", "20"])
+        elif FAST_MODE:
+            command.extend(["-timeout", "5", "-t", "40"])
         command.extend(["-ic", "-fs", "0"])
         if auto_calibrate:
             command.append("-ac")
@@ -4540,6 +4648,105 @@ def make_nuclei_heartbeat(output_file, service_url):
 
 
 # ============================================================
+# Shellshock (CVE-2014-6271 / CVE-2014-7169)
+# ============================================================
+
+SHELLSHOCK_COMMON_URIS = [
+    "/",
+    "/cgi-bin/status",
+    "/cgi-bin/test",
+    "/cgi-bin/test.cgi",
+    "/cgi-bin/status.cgi",
+    "/cgi-bin/index.cgi",
+    "/cgi-bin/admin.cgi",
+]
+
+
+def _shellshock_candidate_uris(discovered_urls, fast_mode=False):
+    values = []
+    for url in discovered_urls or []:
+        try:
+            path = urlparse(str(url)).path or "/"
+        except Exception:
+            continue
+        lowered = path.lower()
+        if "/cgi-bin/" in lowered or lowered.endswith((".cgi", ".sh")):
+            if path not in values:
+                values.append(path)
+
+    defaults = (
+        ["/", "/cgi-bin/status", "/cgi-bin/test.cgi"]
+        if fast_mode
+        else SHELLSHOCK_COMMON_URIS
+    )
+    for path in defaults:
+        if path not in values:
+            values.append(path)
+
+    return values[:8] if fast_mode else values[:16]
+
+
+def run_shellshock_enum(host, service, service_dir, discovered_urls=None):
+    """
+    Executa somente a detecção padrão do NSE http-shellshock.
+    Não fornece cmd customizado. O resultado só é retornado quando o NSE
+    marca explicitamente o alvo como VULNERABLE.
+    """
+    port = int(service.get("port") or (443 if service.get("scheme") == "https" else 80))
+    candidates = _shellshock_candidate_uris(discovered_urls, fast_mode=FAST_MODE)
+    shell_dir = service_dir / "shellshock"
+    shell_dir.mkdir(parents=True, exist_ok=True)
+    positives = []
+
+    for index, uri in enumerate(candidates, start=1):
+        normal_file = shell_dir / f"shellshock_{index:02d}.txt"
+        command = [
+            "nmap",
+            "-Pn",
+            "-n",
+            _nmap_tcp_scan_type(),
+            "-sV",
+            "--version-light",
+            "-p",
+            str(port),
+            "--script",
+            "http-shellshock",
+            "--script-args",
+            f"http-shellshock.uri={uri}",
+            "--script-timeout",
+            "15s" if FAST_MODE else "25s",
+            host,
+            "-T4",
+            "-oN",
+            normal_file,
+        ]
+        stdout, stderr, code = run_command(command, activity=None)
+        output = "\n".join(part for part in [stdout, stderr] if part)
+        if not re.search(r"State:\s*VULNERABLE|\bVULNERABLE:\s*", output, re.I):
+            continue
+
+        positives.append({
+            "id": f"http-shellshock ({uri})",
+            "output": f"VULNERABLE — Shellshock detectado em {uri} (CVE-2014-6271/CVE-2014-7169).",
+        })
+
+    if not positives:
+        return None
+
+    return {
+        "profile": "SHELLSHOCK",
+        "port": port,
+        "protocol": "tcp",
+        "service": service.get("scheme") or "http",
+        "product": service.get("server") or "",
+        "version": "",
+        "scripts": positives,
+        "public_exploits": [],
+        "raw_file": str(shell_dir),
+    }
+
+
+# ============================================================
 # Nikto
 # ============================================================
 
@@ -4556,6 +4763,11 @@ def run_nikto(service, service_dir, cookie=None, announce=True):
         output_file,
         "-nointeractive",
     ]
+
+    if FAST_MODE:
+        command.extend(["-Tuning", "1238be", "-maxtime", "180s", "-timeout", "5"])
+        if service.get("scheme") == "https":
+            command.append("-ssl")
 
     temp_config = None
 
@@ -4667,7 +4879,17 @@ def run_nuclei(service, service_dir, cookie=None, announce=True):
     if cookie:
         command.extend(["-H", f"Cookie: {cookie}"])
 
-    if LOW_NOISE:
+    if FAST_MODE:
+        command.extend([
+            "-severity", "medium,high,critical",
+            "-exclude-tags", "fuzz,headless",
+            "-timeout", "5",
+            "-retries", "1",
+            "-concurrency", "25",
+            "-bulk-size", "25",
+            "-rate-limit", "100",
+        ])
+    elif LOW_NOISE:
         command.extend(["-rl", "10"])
 
     stdout, _, _ = run_command(
@@ -6749,6 +6971,7 @@ Exemplos:
   python3 l1ght_recon.py -t 192.168.92.206 --low-noise
   python3 l1ght_recon.py -t 192.168.92.206 --timeout 900
   python3 l1ght_recon.py -t 192.168.92.206 --log
+  python3 l1ght_recon.py -t 192.168.92.206 --fast
   python3 l1ght_recon.py -t 192.168.92.206 --full
   python3 l1ght_recon.py -t 192.168.92.206 --udp-top 300
   python3 l1ght_recon.py --check-update
@@ -6821,6 +7044,16 @@ Fluxo:
         ),
     )
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help=(
+            "Perfil rápido e direcionado.\n"
+            f"Nmap top {FAST_TCP_TOP_PORTS} TCP, UDP top {FAST_UDP_TOP_PORTS}, "
+            "Katana depth 2, FFUF common.txt depth 2 com até 2 extensões, "
+            "Nikto limitado e Nuclei medium/high/critical."
+        ),
+    )
+    parser.add_argument(
         "--udp-top",
         type=int,
         default=None,
@@ -6855,7 +7088,8 @@ Fluxo:
         default=DEFAULT_CONTENT_WORDLIST,
         help=(
             "Wordlist usada pelo FFUF para diretórios e arquivos.\n"
-            f"Padrão: {DEFAULT_CONTENT_WORDLIST}"
+            f"Padrão: {DEFAULT_CONTENT_WORDLIST}\n"
+            f"--fast: {FAST_CONTENT_WORDLIST}"
         ),
     )
     parser.add_argument(
@@ -6987,14 +7221,33 @@ Fluxo:
 
     args = parser.parse_args()
 
-    global COMMAND_TIMEOUT, LOW_NOISE
+    global COMMAND_TIMEOUT, LOW_NOISE, FAST_MODE
     COMMAND_TIMEOUT = args.timeout
     LOW_NOISE = args.low_noise
+    FAST_MODE = args.fast
+
+    if args.fast and args.full:
+        parser.error("--fast e --full são perfis mutuamente exclusivos.")
 
     if args.udp_top is not None and not (1 <= args.udp_top <= MAX_UDP_TOP_PORTS):
         parser.error(f"--udp-top deve ficar entre 1 e {MAX_UDP_TOP_PORTS}.")
     if args.udp_top is None:
-        args.udp_top = FULL_UDP_TOP_PORTS if args.full else DEFAULT_UDP_TOP_PORTS
+        if args.fast:
+            args.udp_top = FAST_UDP_TOP_PORTS
+        elif args.full:
+            args.udp_top = FULL_UDP_TOP_PORTS
+        else:
+            args.udp_top = DEFAULT_UDP_TOP_PORTS
+    if args.fast:
+        args.depth = 2
+        args.ffuf_depth = 2
+        args.source_limit = min(args.source_limit, 15)
+        if args.wordlist == DEFAULT_CONTENT_WORDLIST:
+            args.wordlist = FAST_CONTENT_WORDLIST
+        info(
+            f"Modo fast habilitado: Nmap top {FAST_TCP_TOP_PORTS} TCP, Katana depth=2, "
+            f"FFUF common.txt depth=2, source-limit={args.source_limit}, UDP top {args.udp_top}."
+        )
     if args.full:
         args.depth = max(args.depth, 5)
         args.ffuf_depth = max(args.ffuf_depth, 2)
@@ -7003,7 +7256,7 @@ Fluxo:
             f"Modo full habilitado: Katana depth={args.depth}, FFUF depth={args.ffuf_depth}, "
             f"source-limit={args.source_limit}, UDP top {args.udp_top}."
         )
-    configure_web_scheduler(full_mode=args.full)
+    configure_web_scheduler(full_mode=args.full, fast_mode=args.fast)
 
     if args.check_update:
         handle_update_check(
@@ -7070,7 +7323,21 @@ Fluxo:
         args.output
         or f"recon_{safe_name(host)}_{timestamp}"
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        if args.output:
+            error(
+                f"Sem permissão para criar o diretório de saída informado: {output_dir}"
+            )
+            sys.exit(1)
+        fallback_root = Path.home() / "l1ght_recon_results"
+        output_dir = fallback_root / f"recon_{safe_name(host)}_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        warning(
+            "Diretório atual sem permissão de escrita; resultados serão gravados em "
+            f"{output_dir}."
+        )
 
     if args.log is not None:
         log_path = output_dir / "debug.log" if args.log == "AUTO" else Path(args.log)
@@ -7164,7 +7431,10 @@ Fluxo:
         args.extensions,
         open_ports,
         web_services,
+        fast_mode=args.fast,
     )
+    if args.fast:
+        info(f"FFUF FAST: wordlist={args.wordlist}; extensões={extensions or '(nenhuma)'}.")
 
     vhost_domain = args.vhost_domain
 
@@ -7518,6 +7788,7 @@ Fluxo:
 
     # Consolidate each service only after every background result is ready.
     all_results = []
+    shellshock_results = []
 
     for service in web_services:
         key = (service["port"], service["scheme"])
@@ -7566,6 +7837,19 @@ Fluxo:
             for url in discovered_urls
             if not is_noise_url(url)
         }
+
+        shellshock_result = run_shellshock_enum(
+            host,
+            service,
+            service_dir,
+            discovered_urls=discovered_urls,
+        )
+        if shellshock_result:
+            shellshock_results.append(shellshock_result)
+            warning(
+                f"Shellshock confirmado em {service['url']}; "
+                "detalhes incluídos na enumeração de serviços."
+            )
 
         write_lines(
             service_dir / "all_urls.txt",
@@ -7620,7 +7904,7 @@ Fluxo:
         result.pop("source_cache", None)
         all_results.append(result)
 
-    service_results = []
+    service_results = list(shellshock_results)
     udp_ports = []
     udp_candidates = []
 

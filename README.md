@@ -8,13 +8,15 @@
 git clone https://github.com/LightReven/l1ght_recon.git && cd l1ght_recon && sudo bash setup_tools.sh
 ```
 
+> **Importante:** faça o `git clone` como usuário comum. Use `sudo` somente no `setup_tools.sh`. Clonar o repositório com `sudo git clone` pode deixar a pasta pertencendo ao root e impedir a gravação dos resultados.
+
 O instalador valida as ferramentas pelo executável correto, não apenas pelo nome. Isso é especialmente importante no Kali: o pacote `python3-httpx` também pode fornecer um comando chamado `httpx`, enquanto a ferramenta usada pelo L1ght Recon é o **httpx da ProjectDiscovery**, empacotado pelo Kali como `httpx-toolkit`.
 
 Em Kali o setup prioriza os pacotes da própria distribuição (`httpx-toolkit`, `katana` e `nuclei`). Em Debian/Ubuntu e derivados, quando esses pacotes não estão disponíveis, o instalador usa os binários pré-compilados oficiais dos projetos. O fluxo suporta Linux x86_64/amd64 e arm64/aarch64, preserva bibliotecas Python já fornecidas pelo APT quando compatíveis e aplica fallbacks para FFUF, WAFW00F, Nikto, WhatWeb e SecLists quando necessário.
 
 O caminho padrão da SecLists também é normalizado para `/usr/share/wordlists/seclists`. Quando as listas necessárias não existem, o setup baixa somente `Discovery/Web-Content` e `Discovery/DNS`, evitando instalar o pacote completo da SecLists apenas para usar as wordlists do L1ght Recon.
 
-Na primeira execução real, o L1ght Recon ainda revalida as dependências. Se algo estiver ausente e houver um terminal interativo, ele pode solicitar `sudo` automaticamente para executar `setup_tools.sh`.
+Na primeira execução real, o L1ght Recon ainda revalida as dependências. Se algo estiver ausente e houver um terminal interativo, ele pode solicitar `sudo` automaticamente para executar `setup_tools.sh`. Em WSL, o Katana é usado no fluxo CLI normal do L1ght Recon; não é necessário instalar Chromium ou suporte gráfico apenas para a ferramenta. Se o diretório atual não permitir escrita, a saída padrão passa automaticamente para `~/l1ght_recon_results/`.
 
 O script registra automaticamente o comando `l1ght_recon` no PATH. Depois do preparo do ambiente, o uso normal fica assim:
 
@@ -25,6 +27,14 @@ l1ght_recon -t 192.168.92.206
 ## Perfis
 
 O perfil padrão prioriza equilíbrio entre cobertura, velocidade e fluidez. O UDP testa as **200 portas mais frequentes** e confirma de forma direcionada candidatos `open|filtered`; somente portas efetivamente confirmadas como `open` são contabilizadas como abertas.
+
+Para uma passagem rápida e direcionada, use `--fast`:
+
+```bash
+l1ght_recon -t 192.168.92.206 --fast
+```
+
+O perfil **fast** usa top 2000 portas TCP, UDP top 100, Katana depth 2, FFUF com `common.txt`, recursão depth 2 e no máximo duas extensões escolhidas conforme a tecnologia observada. O Nmap usa identificação leve de versão, o Nikto restringe categorias e tempo, e o Nuclei prioriza severidades medium/high/critical. É um perfil com perda consciente de cobertura em troca de velocidade; o modo padrão continua recomendado quando o tempo permite.
 
 Para uma enumeração mais completa, sem priorizar tanto o tempo, use `--full`:
 
@@ -58,6 +68,12 @@ Bases obtidas de sementes confiáveis, como `/pdf_generator/`, são sempre fuzza
 Os JSON/logs brutos do FFUF permanecem preservados, enquanto o terminal, o `ffuf_content.json` consolidado e o HTML exibem os resultados após a validação. O arquivo `ffuf_filter_summary.json` registra as baselines e a quantidade de respostas descartadas.
 
 Limites concorrentes por ferramenta pesada continuam ativos e os resultados de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
+
+A enumeração de MySQL inclui `mysql-empty-password` para testar somente os casos triviais de **root sem senha** e **anonymous sem senha**; o resultado só é exibido quando o login vazio é aceito. Serviços Web também recebem uma verificação direcionada com o NSE `http-shellshock`, incluindo URIs CGI descobertas pelo recon e um pequeno conjunto de caminhos comuns. A seção só aparece quando o NSE marca explicitamente o alvo como vulnerável.
+
+## Versão 2.3.0
+
+A versão 2.3.0 adiciona o perfil `--fast`, verificação positiva-only de Shellshock, teste MySQL de root/anonymous com senha vazia, fallback TCP `-sT` para execução sem privilégios, saída automática no HOME quando o diretório atual não é gravável e novas proteções no instalador para WSL, pacotes Python do APT, ferramentas já instaladas e downloads de releases corrompidos/incompletos.
 
 ## Versão 2.2.1
 

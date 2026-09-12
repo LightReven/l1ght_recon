@@ -17,6 +17,25 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/l1ght_recon.py"
 REQ_FILE="${SCRIPT_DIR}/requirements.txt"
 
+# sudo pode aplicar secure_path e esconder ferramentas já instaladas pelo
+# usuário em ~/.local/bin ou ~/go/bin. Reinsere esses caminhos antes de
+# decidir que Katana/Nuclei/etc. estão ausentes.
+ORIGINAL_USER_HOME=""
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    ORIGINAL_USER_HOME="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6)"
+    if [[ -n "${ORIGINAL_USER_HOME}" ]]; then
+        export PATH="${ORIGINAL_USER_HOME}/.local/bin:${ORIGINAL_USER_HOME}/go/bin:${PATH}"
+    fi
+fi
+
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    repo_owner="$(stat -c '%U' "${SCRIPT_DIR}" 2>/dev/null || true)"
+    if [[ "${repo_owner}" == "root" ]]; then
+        warn "O repositório pertence ao root. Evite 'sudo git clone'; isso pode impedir seu usuário de gravar resultados."
+        warn "Sugestão: sudo chown -R ${SUDO_USER}:$(id -gn "${SUDO_USER}") '${SCRIPT_DIR}'"
+    fi
+fi
+
 if [[ ! -r /etc/os-release ]]; then
     fail "Não foi possível identificar a distribuição Linux."
 fi
@@ -26,6 +45,11 @@ fi
 DISTRO_ID="${ID:-unknown}"
 DISTRO_LIKE="${ID_LIKE:-}"
 ARCH_RAW="$(uname -m)"
+IS_WSL=0
+if grep -qiE '(microsoft|wsl)' /proc/sys/kernel/osrelease /proc/version 2>/dev/null; then
+    IS_WSL=1
+    info "WSL detectado: Katana será usado em modo CLI normal; Chromium/headless não é requisito do L1ght Recon."
+fi
 case "${ARCH_RAW}" in
     x86_64|amd64) PD_ARCH="amd64" ;;
     aarch64|arm64) PD_ARCH="arm64" ;;
@@ -74,7 +98,7 @@ retry 2 apt-get update || fail "apt-get update falhou. Verifique rede, DNS e rep
 # Instala cada pacote isoladamente. Assim um pacote ausente em uma distro
 # não impede a instalação dos demais.
 BASE_PACKAGES=(
-    ca-certificates curl unzip tar git
+    ca-certificates curl unzip tar git file
     python3 python3-pip python3-requests python3-bs4
     nmap ffuf nikto whatweb
     dnsutils rpcbind nfs-common smbclient samba-common-bin snmp
@@ -103,24 +127,30 @@ done
 install_python_requirements() {
     [[ -f "${REQ_FILE}" ]] || return 0
 
-    # Preserve pacotes Python fornecidos pela distribuição quando já atendem
-    # ao L1ght Recon. Isso evita o erro "uninstall-no-record-file" do pip
-    # ao tentar atualizar bibliotecas instaladas pelo APT.
     if python3 - <<'PY'
 import requests
-from bs4 import BeautifulSoup
-assert tuple(int(x) for x in requests.__version__.split(".")[:2]) >= (2, 31)
+import bs4
+
+def version_tuple(value):
+    values = []
+    for part in value.split(".")[:2]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        values.append(int(digits or 0))
+    return tuple(values)
+
+assert version_tuple(requests.__version__) >= (2, 31)
+assert version_tuple(bs4.__version__) >= (4, 12)
 PY
     then
         ok "Dependências Python já atendidas pela distribuição."
         return 0
     fi
 
-    info "Instalando apenas dependências Python ausentes..."
+    info "Instalando apenas dependências Python ausentes/incompatíveis..."
     if python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
-        python3 -m pip install --break-system-packages -r "${REQ_FILE}"
+        python3 -m pip install --break-system-packages --ignore-installed -r "${REQ_FILE}"
     else
-        python3 -m pip install -r "${REQ_FILE}"
+        python3 -m pip install --ignore-installed -r "${REQ_FILE}"
     fi
 }
 
@@ -211,21 +241,46 @@ PY
         return 1
     }
 
-    archive="${tmpdir}/asset"
+    asset_name="$(basename "${asset_url%%\?*}")"
+    archive="${tmpdir}/${asset_name}"
     info "Baixando binário oficial de ${tool} para linux/${PD_ARCH}..."
-    retry 3 curl -fL --connect-timeout 15 --max-time 180         --retry 2 --retry-delay 2 "${asset_url}" -o "${archive}" || return 1
+    retry 3 curl -fL --connect-timeout 15 --max-time 180 \
+        --retry 2 --retry-delay 2 "${asset_url}" -o "${archive}" || {
+        rm -rf "${tmpdir}"
+        return 1
+    }
 
     if [[ "${asset_url}" == *.zip ]]; then
-        unzip -q "${archive}" -d "${tmpdir}/extract" || return 1
+        if ! unzip -tq "${archive}" >/dev/null 2>&1; then
+            warn "Arquivo ZIP de ${tool} inválido após o download."
+            rm -rf "${tmpdir}"
+            return 1
+        fi
+        unzip -q "${archive}" -d "${tmpdir}/extract" || {
+            rm -rf "${tmpdir}"
+            return 1
+        }
     else
+        if ! tar -tzf "${archive}" >/dev/null 2>&1; then
+            warn "Arquivo tar.gz de ${tool} inválido após o download."
+            rm -rf "${tmpdir}"
+            return 1
+        fi
         mkdir -p "${tmpdir}/extract"
-        tar -xzf "${archive}" -C "${tmpdir}/extract" || return 1
+        tar -xzf "${archive}" -C "${tmpdir}/extract" || {
+            rm -rf "${tmpdir}"
+            return 1
+        }
     fi
 
     local found
     found="$(find "${tmpdir}/extract" -type f -name "${binary}" -print -quit)"
-    [[ -n "${found}" ]] || return 1
+    if [[ -z "${found}" ]]; then
+        rm -rf "${tmpdir}"
+        return 1
+    fi
     install -m 0755 "${found}" "/usr/local/bin/${binary}"
+    rm -rf "${tmpdir}"
     return 0
 }
 
@@ -236,8 +291,16 @@ install_projectdiscovery_tool() {
     local binary="$4"
 
     if [[ "${logical}" == "httpx" ]]; then
-        normalize_httpx_command && return 0
+        if normalize_httpx_command; then
+            ok "httpx da ProjectDiscovery já disponível."
+            return 0
+        fi
     elif command -v "${binary}" >/dev/null 2>&1; then
+        existing="$(command -v "${binary}")"
+        ok "${logical} já disponível em ${existing}"
+        if [[ "${existing}" != "/usr/local/bin/${binary}" ]]; then
+            ln -sfn "${existing}" "/usr/local/bin/${binary}"
+        fi
         return 0
     fi
 
@@ -377,10 +440,16 @@ for tool in "${OPTIONAL[@]}"; do
     fi
 done
 
-if [[ ! -f /usr/share/wordlists/seclists/Discovery/Web-Content/big.txt ]]; then
-    warn "Wordlist big.txt não localizada no caminho padrão."
-    missing_required=1
-fi
+for wl in \
+    /usr/share/wordlists/seclists/Discovery/Web-Content/big.txt \
+    /usr/share/wordlists/seclists/Discovery/Web-Content/common.txt \
+    /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt
+do
+    if [[ ! -f "${wl}" ]]; then
+        warn "Wordlist necessária não localizada: ${wl}"
+        missing_required=1
+    fi
+done
 
 if [[ "${missing_required}" -ne 0 ]]; then
     fail "Setup terminou com dependências obrigatórias ausentes."

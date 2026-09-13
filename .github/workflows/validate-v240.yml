@@ -22,7 +22,7 @@ jobs:
           grep -q 'VERSION = "2.4.0"' l1ght_recon.py
           grep -q '"wpscan"' l1ght_recon.py
           grep -q 'install_wpscan' setup_tools.sh
-          grep -q 'REQUIRED=(nmap katana ffuf nikto nuclei whatweb wafw00f wpscan)' setup_tools.sh
+          grep -q 'OPTIONAL=(wpscan dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit)' setup_tools.sh
 
           python3 - <<'PY'
           import json
@@ -132,7 +132,7 @@ jobs:
                       full_mode=False,
                   )
               cmd = captured["command"]
-              assert "--enumerate" in cmd and cmd[cmd.index("--enumerate")+1] == "u,vp,vt", cmd
+              assert "--enumerate" in cmd and cmd[cmd.index("--enumerate")+1] == "u,p,t", cmd
               assert "--plugins-detection" in cmd and cmd[cmd.index("--plugins-detection")+1] == "passive", cmd
               assert "--api-token" in cmd, cmd
               assert result["profile"] == "fast", result

@@ -77,7 +77,7 @@ O L1ght Recon confirma WordPress antes de executar o WPScan. A decisão combina 
 Quando WordPress é confirmado, o resultado fica em `web_<porta>_<scheme>/wpscan.json` e o terminal mostra somente um resumo de versão, tema, plugins, usuários e vulnerabilidades. O HTML mantém os detalhes.
 
 Perfis:
-- `--fast`: usuários + plugins/temas vulneráveis, detecção passiva e limite curto;
+- `--fast`: usuários + plugins/temas populares/observáveis, detecção passiva e limite curto;
 - padrão: usuários, plugins/temas populares, backups de configuração e exports de banco;
 - `--full`: enumeração ampla de plugins/temas, TimThumb, backups e exports.
 

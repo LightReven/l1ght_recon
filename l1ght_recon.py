@@ -5318,7 +5318,7 @@ def run_wpscan(service, service_dir, cookie=None, full_mode=False):
     raw_file = service_dir / "wpscan_cli.txt"
 
     if FAST_MODE:
-        enumerate_value = "u,vp,vt"
+        enumerate_value = "u,p,t"
         detection_mode = "passive"
         plugins_detection = "passive"
         profile_timeout = 180
@@ -5368,6 +5368,7 @@ def run_wpscan(service, service_dir, cookie=None, full_mode=False):
     ]
 
     if cookie:
+        DEBUG_SECRETS.add(str(cookie))
         command.extend(["--cookie-string", cookie])
 
     api_token = os.environ.get("WPSCAN_API_TOKEN", "").strip()

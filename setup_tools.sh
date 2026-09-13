@@ -447,8 +447,8 @@ fi
 
 # Validação final. httpx é validado pela assinatura do CLI da ProjectDiscovery,
 # não apenas pelo nome do executável.
-REQUIRED=(nmap katana ffuf nikto nuclei whatweb wafw00f wpscan)
-OPTIONAL=(dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit)
+REQUIRED=(nmap katana ffuf nikto nuclei whatweb wafw00f)
+OPTIONAL=(wpscan dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit)
 
 missing_required=0
 if ! normalize_httpx_command; then

@@ -1,0 +1,57 @@
+name: Publish L1ght Recon v2.4.0
+
+on:
+  push:
+    branches:
+      - publish-v2.4.0
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Final validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          grep -q 'VERSION = "2.4.0"' l1ght_recon.py
+          grep -q 'detect_wordpress' l1ght_recon.py
+          grep -q 'run_wpscan' l1ght_recon.py
+          grep -q -- '--skip-wpscan' <(python3 l1ght_recon.py -h)
+          grep -q 'install_wpscan' setup_tools.sh
+
+      - name: Build release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="$(sha256sum l1ght_recon.py | awk '{print $1}')"
+          cp l1ght_recon.py releases/l1ght_recon_v2_4_0.py
+          cat > releases/latest.json <<JSON
+          {
+            "version": "2.4.0",
+            "channel": "stable",
+            "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_4_0.py",
+            "sha256": "$SHA",
+            "notes": "Detecção automática e contextual de WordPress com WPScan somente quando confirmado; perfis fast/default/full, suporte a WPSCAN_API_TOKEN, relatório HTML/JSON e instalação WPScan via pacote da distro ou RubyGems. Corrige também a idempotência da SecLists no setup."
+          }
+          JSON
+          rm -f .github/workflows/validate-v240.yml
+          rm -f .github/workflows/publish-v240.yml
+
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Publish L1ght Recon v2.4.0"
+          git push origin HEAD:publish-v2.4.0

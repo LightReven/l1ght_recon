@@ -386,8 +386,10 @@ install_wpscan || warn "WPScan não pôde ser instalado automaticamente; a enume
 SECLISTS_ROOT=""
 if [[ -d /usr/share/seclists ]]; then
     SECLISTS_ROOT="/usr/share/seclists"
-elif [[ -d /usr/share/wordlists/seclists ]]; then
-    SECLISTS_ROOT="/usr/share/wordlists/seclists"
+elif [[ -e /usr/share/wordlists/seclists ]]; then
+    # Resolve o destino real para não recriar o link apontando para ele mesmo
+    # em execuções subsequentes do setup.
+    SECLISTS_ROOT="$(readlink -f /usr/share/wordlists/seclists 2>/dev/null || true)"
 fi
 
 if [[ -z "${SECLISTS_ROOT}" || ! -f "${SECLISTS_ROOT}/Discovery/Web-Content/big.txt" ]]; then
@@ -403,7 +405,9 @@ if [[ -z "${SECLISTS_ROOT}" || ! -f "${SECLISTS_ROOT}/Discovery/Web-Content/big.
 fi
 
 mkdir -p /usr/share/wordlists
-ln -sfn "${SECLISTS_ROOT}" /usr/share/wordlists/seclists
+if [[ "${SECLISTS_ROOT}" != "/usr/share/wordlists/seclists" ]]; then
+    ln -sfn "${SECLISTS_ROOT}" /usr/share/wordlists/seclists
+fi
 
 
 # Fall back de FFUF por release binária, útil em Debian/Ubuntu mínimos.

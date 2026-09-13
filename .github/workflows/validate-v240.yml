@@ -1,0 +1,193 @@
+name: Validate L1ght Recon v2.4.0
+
+on:
+  push:
+    branches:
+      - publish-v2.4.0
+
+jobs:
+  regressions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and WordPress regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
+          python3 l1ght_recon.py -h >/tmp/help.txt
+          grep -q -- '--skip-wpscan' /tmp/help.txt
+          grep -q 'VERSION = "2.4.0"' l1ght_recon.py
+          grep -q '"wpscan"' l1ght_recon.py
+          grep -q 'install_wpscan' setup_tools.sh
+          grep -q 'REQUIRED=(nmap katana ffuf nikto nuclei whatweb wafw00f wpscan)' setup_tools.sh
+
+          python3 - <<'PY'
+          import json
+          import os
+          import tempfile
+          from pathlib import Path
+          import runpy
+
+          ns = runpy.run_path("l1ght_recon.py")
+
+          assert ns["VERSION"] == "2.4.0"
+
+          # 1) Strong fingerprint via technology.
+          detected = ns["detect_wordpress"](
+              {"tech":["WordPress","PHP"],"url":"https://example.test"},
+              whatweb=[],
+              discovered_urls=[],
+              source={"headers":{}},
+              response_cache={},
+          )
+          assert detected["detected"] and detected["score"] >= 5, detected
+
+          # 2) Strong fingerprint via discovered path.
+          detected = ns["detect_wordpress"](
+              {"tech":[],"url":"https://example.test"},
+              whatweb=[],
+              discovered_urls=["https://example.test/wp-content/themes/a/style.css"],
+              source={"headers":{}},
+              response_cache={},
+          )
+          assert detected["detected"], detected
+
+          # 3) Generic PHP site must not trigger WPScan.
+          generic = ns["detect_wordpress"](
+              {"tech":["PHP","Apache"],"url":"https://example.test"},
+              whatweb=[{"plugins":[{"name":"PHP","values":["8.2"]}]}],
+              discovered_urls=["https://example.test/login.php"],
+              source={"headers":{"Server":"Apache"}},
+              response_cache={},
+          )
+          assert not generic["detected"], generic
+
+          # 4) Parse representative WPScan JSON.
+          sample = {
+              "target_url":"https://example.test/",
+              "effective_url":"https://example.test/",
+              "version":{
+                  "number":"6.6.2",
+                  "vulnerabilities":[{"title":"Core test","fixed_in":"6.6.3"}]
+              },
+              "main_theme":{
+                  "slug":"twentytwentyfour",
+                  "location":"https://example.test/wp-content/themes/twentytwentyfour/",
+                  "version":{"number":"1.2"},
+                  "vulnerabilities":[]
+              },
+              "plugins":{
+                  "akismet":{
+                      "location":"https://example.test/wp-content/plugins/akismet/",
+                      "version":{"number":"5.3"},
+                      "latest_version":"5.4",
+                      "vulnerabilities":[{"title":"Plugin test","fixed_in":"5.4"}]
+                  }
+              },
+              "users":{
+                  "admin":{"id":1,"display_name":"Administrator","confidence":100}
+              },
+              "interesting_findings":[
+                  {"url":"https://example.test/readme.html","type":"readme","to_s":"readme exposed","confidence":100}
+              ],
+              "config_backups":{".wp-config.php.swp":{}},
+              "db_exports":{"backup.sql":{}}
+          }
+          with tempfile.TemporaryDirectory() as tmp:
+              path = Path(tmp) / "wpscan.json"
+              path.write_text(json.dumps(sample), encoding="utf-8")
+              parsed = ns["parse_wpscan_json"](path)
+          assert parsed["version"] == "6.6.2", parsed
+          assert parsed["main_theme"]["slug"] == "twentytwentyfour", parsed
+          assert len(parsed["plugins"]) == 1, parsed
+          assert parsed["users"][0]["login"] == "admin", parsed
+          assert len(parsed["vulnerabilities"]) == 2, parsed
+          assert parsed["config_backups"] == [".wp-config.php.swp"], parsed
+
+          # 5) FAST profile command construction + token redaction registration.
+          globals_ = ns["run_wpscan"].__globals__
+          original_run = globals_["run_command"]
+          original_fast = globals_["FAST_MODE"]
+          original_timeout = globals_["COMMAND_TIMEOUT"]
+          captured = {}
+          try:
+              globals_["FAST_MODE"] = True
+              globals_["COMMAND_TIMEOUT"] = 0
+              os.environ["WPSCAN_API_TOKEN"] = "unit-test-token"
+
+              def fake_run(command, **kwargs):
+                  captured["command"] = list(command)
+                  out = Path(command[command.index("--output") + 1])
+                  out.write_text(json.dumps({"target_url":"https://example.test/","users":{}}), encoding="utf-8")
+                  return ("", "", 0)
+
+              globals_["run_command"] = fake_run
+              with tempfile.TemporaryDirectory() as tmp:
+                  result = ns["run_wpscan"](
+                      {"url":"https://example.test/","scheme":"https","port":443},
+                      Path(tmp),
+                      full_mode=False,
+                  )
+              cmd = captured["command"]
+              assert "--enumerate" in cmd and cmd[cmd.index("--enumerate")+1] == "u,vp,vt", cmd
+              assert "--plugins-detection" in cmd and cmd[cmd.index("--plugins-detection")+1] == "passive", cmd
+              assert "--api-token" in cmd, cmd
+              assert result["profile"] == "fast", result
+              assert result["api_token_used"] is True, result
+              assert "unit-test-token" in globals_["DEBUG_SECRETS"]
+          finally:
+              globals_["run_command"] = original_run
+              globals_["FAST_MODE"] = original_fast
+              globals_["COMMAND_TIMEOUT"] = original_timeout
+              os.environ.pop("WPSCAN_API_TOKEN", None)
+
+          print("v2.4.0 WordPress regressions: OK")
+          PY
+
+  ubuntu-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Clone branch
+        run: git clone --depth 1 --branch publish-v2.4.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+      - name: Install
+        run: cd /tmp/l1ght_recon && sudo bash setup_tools.sh
+      - name: Verify WPScan and idempotency
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v wpscan
+          wpscan --version
+          wpscan --help >/tmp/wpscan-help.txt
+          for flag in --format --output --enumerate --detection-mode --plugins-detection --cookie-string --request-timeout --max-threads --disable-tls-checks; do
+            grep -q -- "$flag" /tmp/wpscan-help.txt
+          done
+          cd /tmp/l1ght_recon
+          sudo bash setup_tools.sh >/tmp/setup-second.log
+          grep -q 'wpscan' /tmp/setup-second.log
+
+  kali-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: kalilinux/kali-rolling:latest
+    steps:
+      - name: Bootstrap
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
+          git clone --depth 1 --branch publish-v2.4.0 https://github.com/LightReven/l1ght_recon.git /tmp/l1ght_recon
+      - name: Install
+        run: cd /tmp/l1ght_recon && bash setup_tools.sh
+      - name: Verify WPScan
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v wpscan
+          wpscan --version
+          wpscan --help >/tmp/wpscan-help.txt
+          grep -q -- '--plugins-detection' /tmp/wpscan-help.txt
+          grep -q -- '--enumerate' /tmp/wpscan-help.txt

@@ -50,6 +50,7 @@ O `--full` aumenta automaticamente o Katana para depth 5, o FFUF para depth 2, a
 l1ght_recon -t 192.168.92.206:8080
 l1ght_recon -t 192.168.92.206 --log
 l1ght_recon -t 192.168.92.206 --full --log
+l1ght_recon -t 192.168.92.206 --skip-wpscan
 l1ght_recon -t 192.168.92.206 --udp-top 300
 l1ght_recon -t 192.168.92.206 --vhost-domain alvo.local
 l1ght_recon --check-update
@@ -69,7 +70,31 @@ Os JSON/logs brutos do FFUF permanecem preservados, enquanto o terminal, o `ffuf
 
 Limites concorrentes por ferramenta pesada continuam ativos e os resultados de background são exibidos assim que ficam disponíveis, em blocos atômicos, sem misturar linhas de ferramentas diferentes.
 
+### WordPress / WPScan
+
+O L1ght Recon confirma WordPress antes de executar o WPScan. A decisão combina fingerprint do HTTPX/WhatWeb, caminhos característicos como `/wp-content/`, `/wp-includes/`, `/wp-admin/`, `wp-login.php` e `wp-json`, headers como `X-Pingback`/REST API e evidências no HTML. Um serviço Web comum não recebe WPScan.
+
+Quando WordPress é confirmado, o resultado fica em `web_<porta>_<scheme>/wpscan.json` e o terminal mostra somente um resumo de versão, tema, plugins, usuários e vulnerabilidades. O HTML mantém os detalhes.
+
+Perfis:
+- `--fast`: usuários + plugins/temas populares/observáveis, detecção passiva e limite curto;
+- padrão: usuários, plugins/temas populares, backups de configuração e exports de banco;
+- `--full`: enumeração ampla de plugins/temas, TimThumb, backups e exports.
+
+Se a variável `WPSCAN_API_TOKEN` estiver definida, ela é usada automaticamente para enriquecer a consulta de vulnerabilidades e é redigida do `debug.log`. Sem token, a enumeração continua normalmente. Use `--skip-wpscan` para desabilitar essa etapa.
+
+Exemplo com token:
+
+```bash
+export WPSCAN_API_TOKEN='seu_token'
+l1ght_recon -t alvo.local --log
+```
+
 A enumeração de MySQL inclui `mysql-empty-password` para testar somente os casos triviais de **root sem senha** e **anonymous sem senha**; o resultado só é exibido quando o login vazio é aceito. Serviços Web também recebem uma verificação direcionada com o NSE `http-shellshock`, incluindo URIs CGI descobertas pelo recon e um pequeno conjunto de caminhos comuns. A seção só aparece quando o NSE marca explicitamente o alvo como vulnerável.
+
+## Versão 2.4.0
+
+A versão 2.4.0 adiciona detecção automática e contextual de WordPress e integração com WPScan. O scanner só é iniciado quando WordPress é confirmado por evidências suficientes, respeita os perfis `--fast`, padrão e `--full`, aceita `WPSCAN_API_TOKEN` por variável de ambiente e pode ser desabilitado com `--skip-wpscan`. O setup instala WPScan pelo pacote da distribuição quando disponível e usa RubyGems como fallback.
 
 ## Versão 2.3.0
 

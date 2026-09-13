@@ -347,14 +347,49 @@ if ! command -v wafw00f >/dev/null 2>&1; then
     fi
 fi
 
+# WPScan: usa o pacote da distribuição quando disponível. Em Ubuntu/Debian
+# onde o pacote pode não existir, usa a gem oficial com as dependências de
+# compilação necessárias. A instalação só ocorre se wpscan ainda estiver ausente.
+install_wpscan() {
+    if command -v wpscan >/dev/null 2>&1; then
+        ok "wpscan já disponível em $(command -v wpscan)"
+        return 0
+    fi
+
+    if apt_has wpscan; then
+        info "Instalando WPScan pelo pacote da distribuição..."
+        if apt-get install -y wpscan && command -v wpscan >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    info "WPScan não disponível via APT; preparando fallback via RubyGems..."
+    for pkg in ruby ruby-dev build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libffi-dev; do
+        apt_install_if_available "${pkg}"
+        rc=$?
+        if [[ "${rc}" -ne 0 && "${rc}" -ne 2 ]]; then
+            warn "Não foi possível instalar dependência do WPScan: ${pkg}"
+        fi
+    done
+
+    command -v gem >/dev/null 2>&1 || return 1
+
+    retry 2 gem install wpscan --no-document || return 1
+    command -v wpscan >/dev/null 2>&1
+}
+
+install_wpscan || warn "WPScan não pôde ser instalado automaticamente; a enumeração WordPress ficará indisponível."
+
 # SecLists: o pacote completo do Kali é muito grande para o que o L1ght Recon
 # utiliza por padrão. Se as listas necessárias não existirem, baixa somente
 # Discovery/Web-Content e Discovery/DNS por sparse checkout.
 SECLISTS_ROOT=""
 if [[ -d /usr/share/seclists ]]; then
     SECLISTS_ROOT="/usr/share/seclists"
-elif [[ -d /usr/share/wordlists/seclists ]]; then
-    SECLISTS_ROOT="/usr/share/wordlists/seclists"
+elif [[ -e /usr/share/wordlists/seclists ]]; then
+    # Resolve o destino real para não recriar o link apontando para ele mesmo
+    # em execuções subsequentes do setup.
+    SECLISTS_ROOT="$(readlink -f /usr/share/wordlists/seclists 2>/dev/null || true)"
 fi
 
 if [[ -z "${SECLISTS_ROOT}" || ! -f "${SECLISTS_ROOT}/Discovery/Web-Content/big.txt" ]]; then
@@ -370,7 +405,9 @@ if [[ -z "${SECLISTS_ROOT}" || ! -f "${SECLISTS_ROOT}/Discovery/Web-Content/big.
 fi
 
 mkdir -p /usr/share/wordlists
-ln -sfn "${SECLISTS_ROOT}" /usr/share/wordlists/seclists
+if [[ "${SECLISTS_ROOT}" != "/usr/share/wordlists/seclists" ]]; then
+    ln -sfn "${SECLISTS_ROOT}" /usr/share/wordlists/seclists
+fi
 
 
 # Fall back de FFUF por release binária, útil em Debian/Ubuntu mínimos.
@@ -415,7 +452,7 @@ fi
 # Validação final. httpx é validado pela assinatura do CLI da ProjectDiscovery,
 # não apenas pelo nome do executável.
 REQUIRED=(nmap katana ffuf nikto nuclei whatweb wafw00f)
-OPTIONAL=(dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit)
+OPTIONAL=(wpscan dig rpcinfo showmount rpcclient smbclient snmpwalk searchsploit)
 
 missing_required=0
 if ! normalize_httpx_command; then

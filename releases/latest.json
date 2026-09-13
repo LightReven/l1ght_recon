@@ -1,7 +1,7 @@
 {
-  "version": "2.3.0",
+  "version": "2.4.0",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_3_0.py",
-  "sha256": "42c7bbc9974a4e678beb8b360e9a08ec5af6f600a4b765426060026dcefccfa5",
-  "notes": "Novo perfil --fast com Nmap top 2000 TCP, UDP top 100, FFUF common.txt depth 2 e até duas extensões, Nikto/Nuclei reduzidos; verificação Shellshock positiva-only; MySQL root/anonymous sem senha positiva-only; instalação reforçada para Kali/Ubuntu/WSL e ferramentas já existentes."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_4_0.py",
+  "sha256": "c9ec962866e0aa72b51ba101791c07f2644a1eea8c15db9e22dfcc43c0249951",
+  "notes": "Detecção automática e contextual de WordPress com WPScan somente quando confirmado; perfis fast/default/full, suporte a WPSCAN_API_TOKEN, relatório HTML/JSON e instalação WPScan via pacote da distro ou RubyGems. Corrige também a idempotência da SecLists no setup."
 }

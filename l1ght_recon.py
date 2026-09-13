@@ -67,7 +67,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Scanning & Enumeration
 # ============================================================
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 AUTHOR = "Rafael Ademilton"
 HANDLE = "l1ghtr3v3n"
 
@@ -975,6 +975,8 @@ def print_flow():
         "   " + command("nuclei -u URL -silent -jsonl ..."),
         "   " + command("nikto -h URL ..."),
         "   " + command("wafw00f -a --no-colors URL"),
+        "   WPScan roda automaticamente somente quando WordPress é confirmado.",
+        "   " + command("wpscan --url URL --format json --enumerate ..."),
         "   " + command("searchsploit --json 'PRODUTO VERSAO'"),
         "",
         "10. Saída",
@@ -1391,7 +1393,7 @@ def html_table(headers, rows):
 def check_external_tools(auto_setup=False):
     tools = [
         "nmap", "httpx", "katana", "ffuf", "nikto", "nuclei",
-        "whatweb", "wafw00f", "dig", "rpcinfo", "showmount",
+        "whatweb", "wafw00f", "wpscan", "dig", "rpcinfo", "showmount",
         "rpcclient", "smbclient", "snmpwalk", "searchsploit",
     ]
     status = {tool: command_exists(tool) for tool in tools}
@@ -5071,6 +5073,372 @@ def run_whatweb(service, service_dir, cookie=None, announce=True):
     return parse_whatweb_output(stdout)
 
 
+# ============================================================
+# WordPress detection / WPScan
+# ============================================================
+
+WORDPRESS_STRONG_PATH_MARKERS = (
+    "/wp-content/",
+    "/wp-includes/",
+    "/wp-admin/",
+    "/wp-login.php",
+    "/wp-json/",
+)
+
+
+def detect_wordpress(
+    service,
+    whatweb=None,
+    discovered_urls=None,
+    source=None,
+    response_cache=None,
+):
+    """Confirma WordPress por múltiplas evidências antes de iniciar o WPScan."""
+    evidence = []
+    seen = set()
+    score = 0
+
+    def add(label, points):
+        nonlocal score
+        if label in seen:
+            return
+        seen.add(label)
+        evidence.append({"evidence": label, "score": int(points)})
+        score += int(points)
+
+    for tech in service.get("tech") or []:
+        if "wordpress" in str(tech).lower():
+            add(f"httpx/tech: {tech}", 5)
+
+    for record in whatweb or []:
+        for plugin in record.get("plugins") or []:
+            name = str(plugin.get("name") or "")
+            values = " ".join(str(value) for value in (plugin.get("values") or []))
+            if "wordpress" in f"{name} {values}".lower():
+                add(f"WhatWeb: {name}", 5)
+
+    marker_seen = set()
+    for url in discovered_urls or []:
+        try:
+            path = (urlparse(str(url)).path or "/").lower()
+        except Exception:
+            path = str(url or "").lower()
+        for marker in WORDPRESS_STRONG_PATH_MARKERS:
+            if marker in path and marker not in marker_seen:
+                marker_seen.add(marker)
+                add(f"caminho WordPress: {marker.rstrip('/')}", 4)
+        if path.endswith("/xmlrpc.php"):
+            add("endpoint WordPress provável: /xmlrpc.php", 2)
+
+    headers = (source or {}).get("headers") or {}
+    x_pingback = str(headers.get("X-Pingback") or headers.get("x-pingback") or "")
+    if "xmlrpc.php" in x_pingback.lower():
+        add("header X-Pingback aponta para xmlrpc.php", 3)
+    link_header = str(headers.get("Link") or headers.get("link") or "")
+    if "api.w.org" in link_header.lower():
+        add("header Link contém api.w.org", 4)
+
+    cache = response_cache if isinstance(response_cache, dict) else {}
+    for _, response in list(cache.items())[:20]:
+        try:
+            text = (response.text or "").lower()
+        except Exception:
+            continue
+        if re.search(r"<meta[^>]+name=[\"']generator[\"'][^>]+wordpress", text, re.I):
+            add("meta generator WordPress", 5)
+        if "/wp-content/" in text:
+            add("HTML referencia /wp-content/", 3)
+        if "/wp-includes/" in text:
+            add("HTML referencia /wp-includes/", 3)
+        if "api.w.org" in text or "/wp-json/" in text:
+            add("HTML referencia REST API do WordPress", 3)
+
+    detected = score >= 4
+    return {
+        "detected": detected,
+        "score": score,
+        "evidence": evidence,
+    }
+
+
+def _wpscan_component_vulnerabilities(component_type, component_name, data):
+    findings = []
+    if not isinstance(data, dict):
+        return findings
+    for vuln in data.get("vulnerabilities") or []:
+        if not isinstance(vuln, dict):
+            continue
+        findings.append({
+            "component_type": component_type,
+            "component": component_name,
+            "title": vuln.get("title") or vuln.get("id") or "vulnerabilidade",
+            "fixed_in": vuln.get("fixed_in") or "",
+            "references": vuln.get("references") or {},
+        })
+    return findings
+
+
+def parse_wpscan_json(path):
+    path = Path(path)
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    version_data = data.get("version") or {}
+    version = version_data.get("number") if isinstance(version_data, dict) else None
+
+    main_theme_data = data.get("main_theme") or {}
+    main_theme = {}
+    if isinstance(main_theme_data, dict) and main_theme_data:
+        theme_version = main_theme_data.get("version") or {}
+        main_theme = {
+            "slug": main_theme_data.get("slug") or "",
+            "location": main_theme_data.get("location") or "",
+            "version": (
+                theme_version.get("number")
+                if isinstance(theme_version, dict)
+                else ""
+            ) or "",
+            "latest_version": main_theme_data.get("latest_version") or "",
+        }
+
+    plugins = []
+    vulnerabilities = []
+    for slug, plugin_data in (data.get("plugins") or {}).items():
+        if not isinstance(plugin_data, dict):
+            continue
+        version_obj = plugin_data.get("version") or {}
+        item_vulns = _wpscan_component_vulnerabilities(
+            "plugin", slug, plugin_data
+        )
+        vulnerabilities.extend(item_vulns)
+        plugins.append({
+            "slug": slug,
+            "location": plugin_data.get("location") or "",
+            "version": (
+                version_obj.get("number")
+                if isinstance(version_obj, dict)
+                else ""
+            ) or "",
+            "latest_version": plugin_data.get("latest_version") or "",
+            "vulnerabilities": len(item_vulns),
+        })
+
+    themes = []
+    for slug, theme_data in (data.get("themes") or {}).items():
+        if not isinstance(theme_data, dict):
+            continue
+        version_obj = theme_data.get("version") or {}
+        item_vulns = _wpscan_component_vulnerabilities(
+            "theme", slug, theme_data
+        )
+        vulnerabilities.extend(item_vulns)
+        themes.append({
+            "slug": slug,
+            "location": theme_data.get("location") or "",
+            "version": (
+                version_obj.get("number")
+                if isinstance(version_obj, dict)
+                else ""
+            ) or "",
+            "latest_version": theme_data.get("latest_version") or "",
+            "vulnerabilities": len(item_vulns),
+        })
+
+    vulnerabilities.extend(
+        _wpscan_component_vulnerabilities(
+            "wordpress",
+            version or "core",
+            version_data if isinstance(version_data, dict) else {},
+        )
+    )
+    if main_theme:
+        vulnerabilities.extend(
+            _wpscan_component_vulnerabilities(
+                "main_theme",
+                main_theme.get("slug") or "theme",
+                main_theme_data,
+            )
+        )
+
+    users = []
+    raw_users = data.get("users") or {}
+    if isinstance(raw_users, dict):
+        for login, user_data in raw_users.items():
+            user_data = user_data if isinstance(user_data, dict) else {}
+            users.append({
+                "login": login,
+                "id": user_data.get("id"),
+                "display_name": user_data.get("display_name") or "",
+                "confidence": user_data.get("confidence"),
+            })
+
+    interesting = []
+    for item in data.get("interesting_findings") or []:
+        if not isinstance(item, dict):
+            continue
+        interesting.append({
+            "url": item.get("url") or "",
+            "type": item.get("type") or "",
+            "finding": item.get("to_s") or item.get("interesting_entries") or "",
+            "confidence": item.get("confidence"),
+        })
+
+    def keys_or_values(value):
+        if isinstance(value, dict):
+            return list(value.keys())
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
+
+    return {
+        "target_url": data.get("target_url") or "",
+        "effective_url": data.get("effective_url") or "",
+        "version": version or "",
+        "main_theme": main_theme,
+        "plugins": sorted(plugins, key=lambda item: item.get("slug") or ""),
+        "themes": sorted(themes, key=lambda item: item.get("slug") or ""),
+        "users": sorted(users, key=lambda item: item.get("login") or ""),
+        "vulnerabilities": vulnerabilities,
+        "interesting_findings": interesting,
+        "config_backups": keys_or_values(data.get("config_backups") or {}),
+        "db_exports": keys_or_values(data.get("db_exports") or {}),
+    }
+
+
+def run_wpscan(service, service_dir, cookie=None, full_mode=False):
+    output_file = service_dir / "wpscan.json"
+    raw_file = service_dir / "wpscan_cli.txt"
+
+    if FAST_MODE:
+        enumerate_value = "u,vp,vt"
+        detection_mode = "passive"
+        plugins_detection = "passive"
+        profile_timeout = 180
+        threads = 10
+        profile_name = "fast"
+    elif full_mode:
+        enumerate_value = "u,ap,at,tt,cb,dbe"
+        detection_mode = "aggressive"
+        plugins_detection = "mixed"
+        profile_timeout = 1200
+        threads = 15
+        profile_name = "full"
+    else:
+        enumerate_value = "u,p,t,cb,dbe"
+        detection_mode = "mixed"
+        plugins_detection = "mixed"
+        profile_timeout = 600
+        threads = 10
+        profile_name = "default"
+
+    timeout = profile_timeout
+    if COMMAND_TIMEOUT and COMMAND_TIMEOUT > 0:
+        timeout = min(timeout, COMMAND_TIMEOUT)
+
+    command = [
+        "wpscan",
+        "--url",
+        service["url"],
+        "--format",
+        "json",
+        "--output",
+        str(output_file),
+        "--no-banner",
+        "--force",
+        "--disable-tls-checks",
+        "--random-user-agent",
+        "--enumerate",
+        enumerate_value,
+        "--detection-mode",
+        detection_mode,
+        "--plugins-detection",
+        plugins_detection,
+        "--max-threads",
+        str(threads),
+        "--request-timeout",
+        "5" if FAST_MODE else "10",
+    ]
+
+    if cookie:
+        command.extend(["--cookie-string", cookie])
+
+    api_token = os.environ.get("WPSCAN_API_TOKEN", "").strip()
+    if api_token:
+        DEBUG_SECRETS.add(api_token)
+        command.extend(["--api-token", api_token])
+
+    stdout, stderr, code = run_command(
+        command,
+        activity=f"Executando WPScan em {service['url']} ({profile_name})...",
+        timeout=timeout,
+        register_timeout=False,
+    )
+
+    raw_file.write_text(
+        _redact_debug_text("\n".join(part for part in [stdout, stderr] if part)),
+        encoding="utf-8",
+    )
+
+    parsed = parse_wpscan_json(output_file)
+    parsed["profile"] = profile_name
+    parsed["api_token_used"] = bool(api_token)
+    parsed["return_code"] = code
+    parsed["timed_out"] = code == 124
+    parsed["output_file"] = str(output_file)
+
+    if not parsed.get("target_url"):
+        parsed["target_url"] = service["url"]
+
+    return parsed
+
+
+def print_wpscan_results(service_url, result):
+    result = result or {}
+    lines = ["", f"{BOLD}WPScan - {service_url}{RESET}"]
+
+    if result.get("timed_out"):
+        lines.append("  Scan atingiu o limite de tempo; artefatos parciais foram preservados.")
+
+    version = result.get("version") or "não identificada"
+    theme = result.get("main_theme") or {}
+    plugins = result.get("plugins") or []
+    themes = result.get("themes") or []
+    users = result.get("users") or []
+    vulnerabilities = result.get("vulnerabilities") or []
+
+    if not any([result.get("version"), theme, plugins, themes, users, vulnerabilities, result.get("interesting_findings")]):
+        lines.append("  WPScan não retornou dados estruturados adicionais.")
+        console_block(lines)
+        return
+
+    lines.append(f"  WordPress...............: {version}")
+    if theme:
+        theme_text = theme.get("slug") or "-"
+        if theme.get("version"):
+            theme_text += f" {theme['version']}"
+        lines.append(f"  Tema principal..........: {theme_text}")
+    lines.append(f"  Plugins identificados..: {len(plugins)}")
+    lines.append(f"  Temas identificados....: {len(themes)}")
+    lines.append(f"  Usuários encontrados...: {len(users)}")
+    if users:
+        logins = ", ".join(item.get("login") or "-" for item in users[:10])
+        lines.append(f"    {logins}")
+    lines.append(f"  Vulnerabilidades.......: {len(vulnerabilities)}")
+    lines.append(
+        "  API WPScan..............: "
+        + ("token utilizado" if result.get("api_token_used") else "sem token")
+    )
+    console_block(lines)
+
+
 def print_nikto_results(service_url, results):
     seen = NIKTO_PARTIAL_SEEN.get(service_url) or set()
     if seen:
@@ -6476,6 +6844,8 @@ def generate_report(
         nikto = result["nikto"]
         whatweb = result.get("whatweb", [])
         wafw00f = result.get("wafw00f") or {}
+        wordpress_detection = result.get("wordpress_detection") or {}
+        wpscan = result.get("wpscan") or {}
         katana_urls = result["katana_urls"]
 
         fingerprint_rows = [
@@ -6594,6 +6964,86 @@ def generate_report(
                 "".join(details) or "-",
             ])
 
+        wordpress_html = ""
+        if wordpress_detection.get("detected"):
+            detection_rows = [
+                [
+                    html.escape(str(item.get("score") or "-")),
+                    html.escape(str(item.get("evidence") or "-")),
+                ]
+                for item in wordpress_detection.get("evidence") or []
+            ]
+
+            wp_summary_rows = [
+                ["Detecção", "WordPress confirmado"],
+                ["Score", html.escape(str(wordpress_detection.get("score") or 0))],
+                ["Versão", html.escape(str(wpscan.get("version") or "-"))],
+                [
+                    "Tema principal",
+                    html.escape(
+                        " ".join(
+                            part for part in [
+                                str((wpscan.get("main_theme") or {}).get("slug") or ""),
+                                str((wpscan.get("main_theme") or {}).get("version") or ""),
+                            ] if part
+                        ) or "-"
+                    ),
+                ],
+                ["Plugins", html.escape(str(len(wpscan.get("plugins") or [])))],
+                ["Temas", html.escape(str(len(wpscan.get("themes") or [])))],
+                ["Usuários", html.escape(str(len(wpscan.get("users") or [])))],
+                ["Vulnerabilidades", html.escape(str(len(wpscan.get("vulnerabilities") or [])))],
+                [
+                    "API WPScan",
+                    "token utilizado" if wpscan.get("api_token_used") else "sem token",
+                ],
+            ]
+
+            wp_plugin_rows = [[
+                html.escape(str(item.get("slug") or "-")),
+                html.escape(str(item.get("version") or "-")),
+                html.escape(str(item.get("latest_version") or "-")),
+                html.escape(str(item.get("vulnerabilities") or 0)),
+                html.escape(str(item.get("location") or "-")),
+            ] for item in wpscan.get("plugins") or []]
+
+            wp_user_rows = [[
+                html.escape(str(item.get("login") or "-")),
+                html.escape(str(item.get("id") if item.get("id") is not None else "-")),
+                html.escape(str(item.get("display_name") or "-")),
+                html.escape(str(item.get("confidence") if item.get("confidence") is not None else "-")),
+            ] for item in wpscan.get("users") or []]
+
+            wp_vuln_rows = [[
+                html.escape(str(item.get("component_type") or "-")),
+                html.escape(str(item.get("component") or "-")),
+                html.escape(str(item.get("title") or "-")),
+                html.escape(str(item.get("fixed_in") or "-")),
+            ] for item in wpscan.get("vulnerabilities") or []]
+
+            wp_finding_rows = [[
+                html.escape(str(item.get("type") or "-")),
+                html.escape(str(item.get("finding") or "-")),
+                html.escape(str(item.get("url") or "-")),
+                html.escape(str(item.get("confidence") if item.get("confidence") is not None else "-")),
+            ] for item in wpscan.get("interesting_findings") or []]
+
+            wordpress_html = f"""
+<h3>WordPress / WPScan</h3>
+<p class="muted">O WPScan só é iniciado quando o L1ght Recon confirma WordPress por fingerprint, caminhos ou conteúdo observado.</p>
+{html_table(["Campo", "Valor"], wp_summary_rows)}
+<h4>Evidências da detecção</h4>
+{html_table(["Score", "Evidência"], detection_rows)}
+<h4>Plugins</h4>
+{html_table(["Plugin", "Versão", "Última versão", "Vulnerabilidades", "Local"], wp_plugin_rows)}
+<h4>Usuários enumerados</h4>
+{html_table(["Login", "ID", "Display name", "Confiança"], wp_user_rows)}
+<h4>Vulnerabilidades reportadas pelo WPScan</h4>
+{html_table(["Componente", "Nome", "Vulnerabilidade", "Corrigido em"], wp_vuln_rows)}
+<h4>Achados adicionais</h4>
+{html_table(["Tipo", "Achado", "URL", "Confiança"], wp_finding_rows)}
+"""
+
         seed_rows = [[
             html.escape(item.get("source") or "-"),
             html.escape(item.get("url") or "-"),
@@ -6620,6 +7070,8 @@ def generate_report(
 
 <h3>WhatWeb - identificação</h3>
 {html_table(["URL", "Status", "Identificações"], whatweb_rows)}
+
+{wordpress_html}
 
 <h3>WAFW00F - identificação de WAF</h3>
 {html_table(["Campo", "Resultado"], wafw00f_rows)}
@@ -6829,6 +7281,16 @@ def print_final_web_summary(all_results):
         )
         print(f"    Nuclei.................: {len(result.get('nuclei') or [])}")
         print(f"    Nikto..................: {len(result.get('nikto') or [])}")
+        wp_detection = result.get("wordpress_detection") or {}
+        if wp_detection.get("detected"):
+            wp = result.get("wpscan") or {}
+            wp_parts = ["WordPress confirmado"]
+            if wp.get("version"):
+                wp_parts.append(f"v{wp['version']}")
+            if wp:
+                wp_parts.append(f"{len(wp.get('plugins') or [])} plugin(s)")
+                wp_parts.append(f"{len(wp.get('users') or [])} usuário(s)")
+            print("    WordPress / WPScan.....: " + ", ".join(wp_parts))
 
         parameters = result.get("parameters") or []
 
@@ -6974,6 +7436,7 @@ Exemplos:
   python3 l1ght_recon.py -t 192.168.92.206 --log
   python3 l1ght_recon.py -t 192.168.92.206 --fast
   python3 l1ght_recon.py -t 192.168.92.206 --full
+  python3 l1ght_recon.py -t 192.168.92.206 --skip-wpscan
   python3 l1ght_recon.py -t 192.168.92.206 --udp-top 300
   python3 l1ght_recon.py --check-update
   python3 l1ght_recon.py --update
@@ -7194,6 +7657,14 @@ Fluxo:
         "--skip-wafw00f",
         action="store_true",
         help="Não executa WAFW00F.",
+    )
+    parser.add_argument(
+        "--skip-wpscan",
+        action="store_true",
+        help=(
+            "Não executa WPScan mesmo quando WordPress é confirmado "
+            "automaticamente."
+        ),
     )
 
     update_group = parser.add_mutually_exclusive_group()
@@ -7480,6 +7951,8 @@ Fluxo:
             "nuclei": [],
             "whatweb": [],
             "wafw00f": {},
+            "wordpress_detection": {"detected": False, "score": 0, "evidence": []},
+            "wpscan": {},
             "public_exploits": [],
             "preliminary_parameters": [],
         }
@@ -7791,6 +8264,10 @@ Fluxo:
     # Consolidate each service only after every background result is ready.
     all_results = []
     shellshock_results = []
+    wpscan_jobs = {}
+    wpscan_executor = None
+    if tools.get("wpscan") and not args.skip_wpscan:
+        wpscan_executor = ThreadPoolExecutor(max_workers=1 if LOW_NOISE else 2)
 
     for service in web_services:
         key = (service["port"], service["scheme"])
@@ -7839,6 +8316,38 @@ Fluxo:
             for url in discovered_urls
             if not is_noise_url(url)
         }
+
+        wordpress_detection = detect_wordpress(
+            service,
+            whatweb=result.get("whatweb") or [],
+            discovered_urls=discovered_urls,
+            source=source,
+            response_cache=result.get("source_cache") or {},
+        )
+        result["wordpress_detection"] = wordpress_detection
+
+        if wordpress_detection.get("detected"):
+            evidence_text = ", ".join(
+                item.get("evidence") or "-"
+                for item in (wordpress_detection.get("evidence") or [])[:3]
+            )
+            success(
+                f"WordPress confirmado em {service['url']} "
+                f"(score {wordpress_detection.get('score', 0)}; {evidence_text})."
+            )
+            if wpscan_executor is not None:
+                future = wpscan_executor.submit(
+                    run_wpscan,
+                    service,
+                    service_dir,
+                    cookie,
+                    args.full,
+                )
+                wpscan_jobs[future] = result
+            elif not args.skip_wpscan and not tools.get("wpscan"):
+                warning(
+                    f"WordPress confirmado em {service['url']}, mas WPScan não está disponível."
+                )
 
         shellshock_result = None
         if not args.skip_service_enum:
@@ -7907,6 +8416,22 @@ Fluxo:
         result.pop("preliminary_parameters", None)
         result.pop("source_cache", None)
         all_results.append(result)
+
+    if wpscan_jobs:
+        for future in as_completed(wpscan_jobs):
+            result = wpscan_jobs[future]
+            service_url = result.get("service", {}).get("url") or "-"
+            try:
+                value = future.result()
+                result["wpscan"] = value
+                print_wpscan_results(service_url, value)
+            except Exception as exc:
+                result["wpscan"] = {}
+                warning(f"Falha no WPScan de {service_url}: {exc}")
+                _debug_log("WPSCAN_EXCEPTION", f"service={service_url} exc={exc!r}")
+
+    if wpscan_executor is not None:
+        wpscan_executor.shutdown(wait=True, cancel_futures=False)
 
     service_results = list(shellshock_results)
     udp_ports = []

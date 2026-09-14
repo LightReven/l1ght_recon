@@ -1392,6 +1392,313 @@ def html_table(headers, rows):
 
 
 # ============================================================
+# Session state / resume / follow-up
+# ============================================================
+
+SESSION_STATE_SCHEMA = 1
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (set, tuple, list)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Counter):
+        return dict(value)
+    if isinstance(value, Path):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _atomic_write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(
+        json.dumps(_json_safe(data), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temp, path)
+
+
+def _session_service_id(service):
+    return f"{int(service.get('port') or 0)}:{service.get('scheme') or 'http'}"
+
+
+def init_session_state(output_dir, target, host, mode="fresh", source_dir=None):
+    global SESSION_STATE_PATH, SESSION_STATE
+    SESSION_STATE_PATH = Path(output_dir) / "session_state.json"
+
+    existing = {}
+    if SESSION_STATE_PATH.exists():
+        try:
+            existing = json.loads(
+                SESSION_STATE_PATH.read_text(encoding="utf-8", errors="ignore")
+            )
+        except Exception:
+            existing = {}
+
+    if mode == "resume" and isinstance(existing, dict) and existing:
+        SESSION_STATE = existing
+        SESSION_STATE["complete"] = False
+        SESSION_STATE["mode"] = "resume"
+        SESSION_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    else:
+        SESSION_STATE = {
+            "schema": SESSION_STATE_SCHEMA,
+            "version": VERSION,
+            "target": target,
+            "host": host,
+            "mode": mode,
+            "source_dir": str(source_dir) if source_dir else "",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "complete": False,
+            "phases": {},
+            "web": {},
+        }
+
+    _atomic_write_json(SESSION_STATE_PATH, SESSION_STATE)
+
+
+def session_phase_get(name, default=None):
+    with SESSION_STATE_LOCK:
+        item = (SESSION_STATE.get("phases") or {}).get(name) or {}
+        if item.get("done"):
+            return item.get("value", default)
+    return default
+
+
+def session_phase_set(name, value):
+    if SESSION_STATE_PATH is None:
+        return
+    with SESSION_STATE_LOCK:
+        SESSION_STATE.setdefault("phases", {})[name] = {
+            "done": True,
+            "value": _json_safe(value),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        SESSION_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _atomic_write_json(SESSION_STATE_PATH, SESSION_STATE)
+
+
+def session_web_get(service, field, default=None):
+    sid = _session_service_id(service)
+    with SESSION_STATE_LOCK:
+        item = ((SESSION_STATE.get("web") or {}).get(sid) or {}).get(field) or {}
+        if item.get("done"):
+            return item.get("value", default)
+    return default
+
+
+def session_web_done(service, field):
+    sid = _session_service_id(service)
+    with SESSION_STATE_LOCK:
+        return bool(
+            ((((SESSION_STATE.get("web") or {}).get(sid) or {}).get(field) or {}).get("done"))
+        )
+
+
+def session_web_set(service, field, value):
+    if SESSION_STATE_PATH is None:
+        return
+    sid = _session_service_id(service)
+    with SESSION_STATE_LOCK:
+        service_state = SESSION_STATE.setdefault("web", {}).setdefault(sid, {})
+        service_state[field] = {
+            "done": True,
+            "value": _json_safe(value),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        SESSION_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _atomic_write_json(SESSION_STATE_PATH, SESSION_STATE)
+
+
+def session_mark_complete():
+    if SESSION_STATE_PATH is None:
+        return
+    with SESSION_STATE_LOCK:
+        SESSION_STATE["complete"] = True
+        SESSION_STATE["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        SESSION_STATE["updated_at"] = SESSION_STATE["completed_at"]
+        _atomic_write_json(SESSION_STATE_PATH, SESSION_STATE)
+
+
+def _load_session_file(directory):
+    path = Path(directory) / "session_state.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _run_search_roots():
+    roots = [Path.cwd(), Path.home() / "l1ght_recon_results"]
+    unique = []
+    seen = set()
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve()
+        except Exception:
+            resolved = root.expanduser()
+        if str(resolved) in seen or not resolved.exists():
+            continue
+        seen.add(str(resolved))
+        unique.append(resolved)
+    return unique
+
+
+def find_run_directories(host):
+    pattern = f"recon_{safe_name(host)}_*"
+    found = []
+    seen = set()
+    for root in _run_search_roots():
+        for path in root.glob(pattern):
+            if not path.is_dir():
+                continue
+            try:
+                resolved = path.resolve()
+            except Exception:
+                resolved = path
+            if str(resolved) in seen:
+                continue
+            seen.add(str(resolved))
+            try:
+                mtime = resolved.stat().st_mtime
+            except OSError:
+                mtime = 0
+            found.append((mtime, resolved))
+    return [path for _, path in sorted(found, reverse=True)]
+
+
+def find_latest_run(host, incomplete_only=False, exclude=None):
+    exclude = Path(exclude).resolve() if exclude else None
+    for path in find_run_directories(host):
+        try:
+            if exclude and path.resolve() == exclude:
+                continue
+        except Exception:
+            pass
+        state = _load_session_file(path)
+        if incomplete_only and (not state or state.get("complete") is not False):
+            continue
+        return path
+    return None
+
+
+def resolve_prior_run(value, host, incomplete_only=False):
+    if value in (None, False):
+        return None
+    if str(value).upper() == "AUTO":
+        return find_latest_run(host, incomplete_only=incomplete_only)
+    path = Path(str(value)).expanduser()
+    if not path.is_dir():
+        raise ValueError(f"Diretório de execução anterior não encontrado: {path}")
+    return path.resolve()
+
+
+def load_prior_web_discovery(run_dir, service):
+    if not run_dir:
+        return {"urls": [], "bases": [], "ffuf": []}
+
+    service_dir = (
+        Path(run_dir)
+        / f"web_{int(service.get('port') or 0)}_{service.get('scheme') or 'http'}"
+    )
+    urls = set()
+    bases = set()
+    ffuf_items = []
+
+    def add_url(value):
+        if not value:
+            return
+        value = canonicalize_seed_url(value)
+        if value.startswith(("http://", "https://")) and same_service(value, service["url"]):
+            urls.add(value)
+
+    for name in ("all_urls.txt", "katana_urls.txt", "katana_seeds.txt"):
+        path = service_dir / name
+        if not path.exists():
+            continue
+        for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            add_url(raw.strip())
+
+    ffuf_file = service_dir / "ffuf_content.json"
+    if ffuf_file.exists():
+        try:
+            data = json.loads(ffuf_file.read_text(encoding="utf-8", errors="ignore"))
+            ffuf_items = data.get("results", []) if isinstance(data, dict) else []
+        except Exception:
+            ffuf_items = []
+
+    for item in ffuf_items:
+        url = item.get("url")
+        add_url(url)
+        if not url:
+            continue
+        try:
+            parsed = urlparse(canonicalize_seed_url(url))
+        except Exception:
+            continue
+        path = parsed.path or "/"
+        status = int(item.get("status") or 0)
+        redirect = str(item.get("redirectlocation") or "")
+        directory_like = (
+            path.endswith("/")
+            or status in {301, 302, 307, 308, 401, 403}
+            or redirect.rstrip().endswith("/")
+        )
+        if directory_like:
+            directory = path.rstrip("/") + "/"
+        else:
+            directory = path.rsplit("/", 1)[0] + "/" if "/" in path else "/"
+        bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+
+    for url in list(urls):
+        try:
+            parsed = urlparse(url)
+            path = parsed.path or "/"
+            if path.endswith("/"):
+                directory = path
+            else:
+                directory = path.rsplit("/", 1)[0] + "/" if "/" in path else "/"
+            bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+        except Exception:
+            continue
+
+    root = canonicalize_seed_url(service["url"]).rstrip("/") + "/"
+    bases.discard(root)
+
+    return {"urls": sorted(urls), "bases": sorted(bases), "ffuf": ffuf_items}
+
+
+def _register_active_process(process):
+    with ACTIVE_PROCESSES_LOCK:
+        ACTIVE_PROCESSES.add(process)
+
+
+def _unregister_active_process(process):
+    with ACTIVE_PROCESSES_LOCK:
+        ACTIVE_PROCESSES.discard(process)
+
+
+def terminate_active_processes():
+    with ACTIVE_PROCESSES_LOCK:
+        processes = list(ACTIVE_PROCESSES)
+    for process in processes:
+        try:
+            if process.poll() is None:
+                process.kill()
+        except Exception:
+            pass
+
+
+# ============================================================
 # Dependency checks
 # ============================================================
 

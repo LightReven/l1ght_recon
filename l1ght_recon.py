@@ -8834,7 +8834,13 @@ Fluxo:
                 f"{service['url']}{RESET}"
             )
 
-            if tools["katana"]:
+            if session_web_done(service, "katana_urls"):
+                katana_urls = result.get("katana_urls") or [service["url"]]
+                katana_forms = result.get("katana_forms") or []
+                success(
+                    f"Resume: reutilizando {len(katana_urls)} URL(s) do Katana em {service['url']}."
+                )
+            elif tools["katana"]:
                 katana_urls, katana_forms = run_katana(
                     service,
                     service_dir,
@@ -8846,6 +8852,8 @@ Fluxo:
                     ],
                     progress_callback=drain_ready_background,
                 )
+                session_web_set(service, "katana_urls", katana_urls)
+                session_web_set(service, "katana_forms", katana_forms)
             else:
                 katana_urls = [service["url"]]
                 katana_forms = []

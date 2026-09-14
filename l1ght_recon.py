@@ -8935,7 +8935,11 @@ Fluxo:
             drain_ffuf_partial_blocks()
             metric_end("web_background_wait", background_wait_started)
 
-    finally:
+    except KeyboardInterrupt:
+        terminate_active_processes()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
         executor.shutdown(wait=True, cancel_futures=False)
 
     # Consolidate each service only after every background result is ready.

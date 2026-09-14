@@ -8385,24 +8385,58 @@ Fluxo:
         sys.exit(1)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(
-        args.output
-        or f"recon_{safe_name(host)}_{timestamp}"
-    )
+    resume_dir = None
+    followup_dir = None
+
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        if args.output:
-            error(
-                f"Sem permissão para criar o diretório de saída informado: {output_dir}"
+        if args.resume:
+            resume_dir = resolve_prior_run(args.resume, host, incomplete_only=False)
+            if resume_dir is None:
+                parser.error("nenhuma execução anterior foi encontrada para --resume.")
+        elif not args.fresh and not args.output and not args.follow_up:
+            resume_dir = find_latest_run(host, incomplete_only=True)
+
+        if args.follow_up:
+            followup_dir = resolve_prior_run(args.follow_up, host, incomplete_only=False)
+            if followup_dir is None:
+                parser.error("nenhuma execução anterior foi encontrada para --follow-up.")
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    if resume_dir is not None:
+        output_dir = Path(resume_dir)
+        info(f"Retomando execução anterior: {output_dir}")
+    else:
+        output_dir = Path(
+            args.output
+            or f"recon_{safe_name(host)}_{timestamp}"
+        )
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            if args.output:
+                error(
+                    f"Sem permissão para criar o diretório de saída informado: {output_dir}"
+                )
+                sys.exit(1)
+            fallback_root = Path.home() / "l1ght_recon_results"
+            output_dir = fallback_root / f"recon_{safe_name(host)}_{timestamp}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            warning(
+                "Diretório atual sem permissão de escrita; resultados serão gravados em "
+                f"{output_dir}."
             )
-            sys.exit(1)
-        fallback_root = Path.home() / "l1ght_recon_results"
-        output_dir = fallback_root / f"recon_{safe_name(host)}_{timestamp}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        warning(
-            "Diretório atual sem permissão de escrita; resultados serão gravados em "
-            f"{output_dir}."
+
+    init_session_state(
+        output_dir,
+        target,
+        host,
+        mode="resume" if resume_dir is not None else ("follow-up" if followup_dir else "fresh"),
+        source_dir=followup_dir,
+    )
+    if followup_dir:
+        info(
+            f"Follow-up habilitado: descobertas anteriores serão importadas de {followup_dir}."
         )
 
     if args.log is not None:

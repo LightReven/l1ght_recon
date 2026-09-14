@@ -7995,6 +7995,9 @@ Exemplos:
   python3 l1ght_recon.py -t 192.168.92.206 --log
   python3 l1ght_recon.py -t 192.168.92.206 --fast
   python3 l1ght_recon.py -t 192.168.92.206 --full
+  python3 l1ght_recon.py -t 192.168.92.206 --resume
+  python3 l1ght_recon.py -t 192.168.92.206 --follow-up
+  python3 l1ght_recon.py -t 192.168.92.206 --fresh
   python3 l1ght_recon.py -t 192.168.92.206 --skip-wpscan
   python3 l1ght_recon.py -t 192.168.92.206 --udp-top 300
   python3 l1ght_recon.py --check-update
@@ -8045,6 +8048,32 @@ Fluxo:
             "Diretório de saída.\n"
             "Padrão: recon_<host>_<data_hora>"
         ),
+    )
+    session_group = parser.add_mutually_exclusive_group()
+    session_group.add_argument(
+        "--resume",
+        nargs="?",
+        const="AUTO",
+        metavar="DIR",
+        help=(
+            "Continua uma execução interrompida no mesmo diretório. Sem DIR, "
+            "usa a execução incompleta mais recente do mesmo alvo."
+        ),
+    )
+    session_group.add_argument(
+        "--follow-up",
+        nargs="?",
+        const="AUTO",
+        metavar="DIR",
+        help=(
+            "Inicia uma nova execução aproveitando URLs/diretórios da execução "
+            "anterior. O FFUF parte dos diretórios já descobertos em vez da raiz."
+        ),
+    )
+    session_group.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Força uma execução nova e ignora auto-resume de sessão incompleta.",
     )
     parser.add_argument(
         "--log",
@@ -8224,6 +8253,11 @@ Fluxo:
             "Não executa WPScan mesmo quando WordPress é confirmado "
             "automaticamente."
         ),
+    )
+    parser.add_argument(
+        "--skip-git-enum",
+        action="store_true",
+        help="Não verifica exposição básica de metadados .git em serviços Web.",
     )
 
     update_group = parser.add_mutually_exclusive_group()

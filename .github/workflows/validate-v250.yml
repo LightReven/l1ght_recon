@@ -1,0 +1,242 @@
+name: Validate L1ght Recon v2.5.0
+
+on:
+  push:
+    branches:
+      - publish-v2.5.0
+
+jobs:
+  regressions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile l1ght_recon.py
+          bash -n setup_tools.sh
+          python3 -m pip install -q -r requirements.txt
+
+          python3 l1ght_recon.py -h >/tmp/help.txt
+          grep -q -- '--resume' /tmp/help.txt
+          grep -q -- '--follow-up' /tmp/help.txt
+          grep -q -- '--fresh' /tmp/help.txt
+          grep -q -- '--skip-git-enum' /tmp/help.txt
+          grep -q 'VERSION = "2.5.0"' l1ght_recon.py
+
+          python3 - <<'PY'
+          import json
+          import os
+          import tempfile
+          from pathlib import Path
+          import runpy
+
+          ns = runpy.run_path("l1ght_recon.py")
+          assert ns["VERSION"] == "2.5.0"
+
+          # 1) Regressão do caso real: 503 uniforme precisa ser descartado.
+          profile_503 = {
+              "redirect_alias": False,
+              "suffixes": [""],
+              "signatures": {
+                  "": {
+                      "status": 503,
+                      "length": 326,
+                      "words": 12,
+                      "lines": 8,
+                      "has_location": False,
+                  }
+              },
+          }
+          assert ns["_ffuf_item_matches_baseline"](
+              {
+                  "url": "http://192.0.2.10/random",
+                  "status": 503,
+                  "length": 326,
+                  "words": 12,
+                  "lines": 8,
+                  "redirectlocation": "",
+              },
+              profile_503,
+          )
+          assert not ns["_ffuf_item_matches_baseline"](
+              {
+                  "url": "http://192.0.2.10/admin",
+                  "status": 403,
+                  "length": 326,
+                  "words": 12,
+                  "lines": 8,
+                  "redirectlocation": "",
+              },
+              profile_503,
+          )
+
+          # 2) Baseline 503 estável não deve acionar o segundo passe sem -ac.
+          ffuf_globals = ns["run_ffuf_content"].__globals__
+          original_baseline = ffuf_globals["_ffuf_baseline_profile"]
+          original_stream = ffuf_globals["_run_ffuf_json_stream"]
+          original_fast = ffuf_globals["FAST_MODE"]
+          calls = []
+
+          def fake_baseline(base_url, extensions, cookie=None):
+              return {
+                  "base_url": base_url,
+                  "suffixes": [""],
+                  "signatures": {
+                      "": {
+                          "status": 503,
+                          "length": 326,
+                          "words": 12,
+                          "lines": 8,
+                          "has_location": False,
+                      }
+                  },
+                  "redirect_alias": False,
+                  "probes": 2,
+                  "rejected": 0,
+              }
+
+          def fake_stream(command, service_url, **kwargs):
+              calls.append(list(command))
+              return []
+
+          try:
+              ffuf_globals["_ffuf_baseline_profile"] = fake_baseline
+              ffuf_globals["_run_ffuf_json_stream"] = fake_stream
+              ffuf_globals["FAST_MODE"] = False
+              with tempfile.TemporaryDirectory() as tmp:
+                  wl = Path(tmp) / "common.txt"
+                  wl.write_text("admin\n", encoding="utf-8")
+                  ns["run_ffuf_content"](
+                      {
+                          "url": "http://192.0.2.10",
+                          "scheme": "http",
+                          "host": "192.0.2.10",
+                          "port": 80,
+                      },
+                      Path(tmp),
+                      str(wl),
+                      "",
+                      1,
+                      announce=False,
+                  )
+              assert len(calls) == 1, calls
+              assert "-ac" in calls[0], calls
+          finally:
+              ffuf_globals["_ffuf_baseline_profile"] = original_baseline
+              ffuf_globals["_run_ffuf_json_stream"] = original_stream
+              ffuf_globals["FAST_MODE"] = original_fast
+
+          # 3) Follow-up: /admin/bkp descoberto como diretório vira base direta.
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp) / "recon_192.0.2.10_20260914_100000"
+              web = root / "web_80_http"
+              web.mkdir(parents=True)
+              (web / "all_urls.txt").write_text(
+                  "http://192.0.2.10/admin/\n"
+                  "http://192.0.2.10/admin/bkp\n",
+                  encoding="utf-8",
+              )
+              (web / "ffuf_content.json").write_text(
+                  json.dumps({
+                      "results": [
+                          {
+                              "url": "http://192.0.2.10/admin/bkp",
+                              "status": 301,
+                              "length": 123,
+                              "redirectlocation": "/admin/bkp/",
+                          }
+                      ]
+                  }),
+                  encoding="utf-8",
+              )
+              prior = ns["load_prior_web_discovery"](
+                  root,
+                  {
+                      "url": "http://192.0.2.10",
+                      "scheme": "http",
+                      "host": "192.0.2.10",
+                      "port": 80,
+                  },
+              )
+              assert "http://192.0.2.10/admin/bkp/" in prior["bases"], prior
+              assert "http://192.0.2.10/" not in prior["bases"], prior
+
+          # 4) Checkpoint de sessão persiste fases e ferramentas Web.
+          with tempfile.TemporaryDirectory() as tmp:
+              out = Path(tmp) / "recon_192.0.2.20_20260914_110000"
+              out.mkdir()
+              ns["init_session_state"](out, "192.0.2.20", "192.0.2.20")
+              ns["session_phase_set"]("open_ports", [{"port":80,"protocol":"tcp"}])
+              svc = {"port":80,"scheme":"http","url":"http://192.0.2.20"}
+              ns["session_web_set"](svc, "katana_urls", ["http://192.0.2.20/admin"])
+              state = json.loads((out / "session_state.json").read_text())
+              assert state["complete"] is False
+              assert state["phases"]["open_ports"]["done"] is True
+              assert state["web"]["80:http"]["katana_urls"]["done"] is True
+              ns["session_mark_complete"]()
+              state = json.loads((out / "session_state.json").read_text())
+              assert state["complete"] is True
+
+          # 5) Enumeração Git só confirma HEAD válido e redige userinfo de remote.
+          class FakeResponse:
+              def __init__(self, status, text):
+                  self.status_code = status
+                  self.text = text
+
+          class FakeSession:
+              def __init__(self):
+                  self.headers = {}
+              def get(self, url, **kwargs):
+                  if url.endswith("/.git/HEAD"):
+                      return FakeResponse(200, "ref: refs/heads/main\n")
+                  if url.endswith("/.git/refs/heads/main"):
+                      return FakeResponse(200, "0123456789abcdef0123456789abcdef01234567\n")
+                  if url.endswith("/.git/config"):
+                      return FakeResponse(
+                          200,
+                          '[remote "origin"]\n'
+                          '    url = https://user:secret@example.test/repo.git\n',
+                      )
+                  if url.endswith("/.git/packed-refs"):
+                      return FakeResponse(
+                          200,
+                          "89abcdef0123456789abcdef0123456789abcdef refs/tags/v1\n",
+                      )
+                  if url.endswith("/.git/logs/HEAD"):
+                      return FakeResponse(
+                          200,
+                          "0000000000000000000000000000000000000000 "
+                          "0123456789abcdef0123456789abcdef01234567 "
+                          "A <a@example.test> 1 +0000\tinitial\n",
+                      )
+                  return FakeResponse(404, "")
+
+          git_globals = ns["run_git_exposure_enum"].__globals__
+          original_session = git_globals["requests"].Session
+          try:
+              git_globals["requests"].Session = FakeSession
+              with tempfile.TemporaryDirectory() as tmp:
+                  result = ns["run_git_exposure_enum"](
+                      {
+                          "url":"https://example.test",
+                          "scheme":"https",
+                          "host":"example.test",
+                          "port":443,
+                      },
+                      Path(tmp),
+                      discovered_urls=["https://example.test/admin/"],
+                  )
+              assert result["exposed"] is True, result
+              repo = result["repositories"][0]
+              assert repo["branch"] == "main", repo
+              assert repo["commit"].startswith("012345"), repo
+              assert "secret" not in repo["remotes"][0]["url"], repo
+              assert "<redacted>@" in repo["remotes"][0]["url"], repo
+          finally:
+              git_globals["requests"].Session = original_session
+
+          print("v2.5.0 regressions: OK")
+          PY

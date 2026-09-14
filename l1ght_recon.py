@@ -8994,6 +8994,26 @@ Fluxo:
             if not is_noise_url(url)
         }
 
+        git_exposure = result.get("git_exposure") or {}
+        if not args.skip_git_enum:
+            if session_web_done(service, "git_exposure"):
+                git_exposure = session_web_get(
+                    service,
+                    "git_exposure",
+                    {"exposed": False, "repositories": []},
+                )
+            else:
+                git_exposure = run_git_exposure_enum(
+                    service,
+                    service_dir,
+                    discovered_urls=discovered_urls,
+                    cookie=cookie,
+                )
+                session_web_set(service, "git_exposure", git_exposure)
+            result["git_exposure"] = git_exposure
+            if git_exposure.get("exposed"):
+                print_git_exposure_results(service["url"], git_exposure)
+
         wordpress_detection = detect_wordpress(
             service,
             whatweb=result.get("whatweb") or [],
@@ -9002,6 +9022,7 @@ Fluxo:
             response_cache=result.get("source_cache") or {},
         )
         result["wordpress_detection"] = wordpress_detection
+        session_web_set(service, "wordpress_detection", wordpress_detection)
 
         if wordpress_detection.get("detected"):
             evidence_text = ", ".join(
@@ -9012,7 +9033,9 @@ Fluxo:
                 f"WordPress confirmado em {service['url']} "
                 f"(score {wordpress_detection.get('score', 0)}; {evidence_text})."
             )
-            if wpscan_executor is not None:
+            if result.get("wpscan"):
+                print_wpscan_results(service["url"], result["wpscan"])
+            elif wpscan_executor is not None:
                 future = wpscan_executor.submit(
                     run_wpscan,
                     service,
@@ -9101,6 +9124,7 @@ Fluxo:
             try:
                 value = future.result()
                 result["wpscan"] = value
+                session_web_set(result["service"], "wpscan", value)
                 print_wpscan_results(service_url, value)
             except Exception as exc:
                 result["wpscan"] = {}

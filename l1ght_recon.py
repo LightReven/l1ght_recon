@@ -1664,9 +1664,15 @@ def load_prior_web_discovery(run_dir, service):
         )
         if directory_like:
             directory = path.rstrip("/") + "/"
+            bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
         else:
             directory = path.rsplit("/", 1)[0] + "/" if "/" in path else "/"
-        bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+            bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+            leaf = path.rstrip("/").rsplit("/", 1)[-1]
+            if leaf and "." not in leaf and status == 200:
+                bases.add(
+                    f"{parsed.scheme}://{parsed.netloc}{path.rstrip('/')}/"
+                )
 
     for url in list(urls):
         try:
@@ -1674,9 +1680,15 @@ def load_prior_web_discovery(run_dir, service):
             path = parsed.path or "/"
             if path.endswith("/"):
                 directory = path
+                bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
             else:
                 directory = path.rsplit("/", 1)[0] + "/" if "/" in path else "/"
-            bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+                bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+                leaf = path.rsplit("/", 1)[-1]
+                if leaf and "." not in leaf:
+                    bases.add(
+                        f"{parsed.scheme}://{parsed.netloc}{path.rstrip('/')}/"
+                    )
         except Exception:
             continue
 
@@ -4422,12 +4434,20 @@ def run_ffuf_content(
 
     max_bases = 8 if FAST_MODE else (24 if full_mode else 12)
     if explicit_bases:
+        max_bases = 12 if FAST_MODE else (48 if full_mode else 24)
         normalized_bases = []
         for value in explicit_bases:
             value = canonicalize_seed_url(value)
             if same_service(value, service["url"]):
                 normalized_bases.append(value.rstrip("/") + "/")
-        fuzz_bases = sorted(dict.fromkeys(normalized_bases))[:max_bases]
+        fuzz_bases = sorted(
+            dict.fromkeys(normalized_bases),
+            key=lambda value: (
+                -urlparse(value).path.count("/"),
+                -len(urlparse(value).path),
+                value,
+            ),
+        )[:max_bases]
     else:
         fuzz_bases = ffuf_bases_from_seeds(
             service, seed_urls or [service["url"]], max_bases=max_bases
@@ -4564,18 +4584,29 @@ def run_ffuf_content(
         int(profile.get("rejected") or 0)
         for profile in baseline_cache.values()
     )
+    stable_generic_baseline = any(
+        any(
+            int(signature.get("status") or 0) in {429, 500, 501, 502, 503, 504, 505}
+            for signature in (profile.get("signatures") or {}).values()
+        )
+        for profile in baseline_cache.values()
+    )
 
-    if not combined and attempted_bases and rejected_by_baseline == 0:
+    if (
+        not combined
+        and attempted_bases
+        and rejected_by_baseline == 0
+        and not stable_generic_baseline
+    ):
         warning(
             f"FFUF em {service['url']} não retornou achados após os filtros "
             "conservadores; validando novamente sem -ac..."
         )
         combined.extend(seed_complete_pass(auto_calibrate=False, suffix="_fallback"))
-    elif not combined and rejected_by_baseline:
+    elif not combined and (rejected_by_baseline or stable_generic_baseline):
         info(
-            f"FFUF em {service['url']}: respostas genéricas foram reconhecidas "
-            f"pela baseline ({rejected_by_baseline} descartadas); "
-            "fallback sem -ac omitido."
+            f"FFUF em {service['url']}: resposta genérica/wildcard reconhecida "
+            "pela baseline; fallback sem -ac omitido."
         )
 
     unique = {}
@@ -8618,17 +8649,21 @@ Fluxo:
         service_dir = output_dir / f"web_{service['port']}_{service['scheme']}"
         service_dir.mkdir(parents=True, exist_ok=True)
 
-        seed_evidence = build_service_seed_evidence(
-            service,
-            open_ports,
-            cookie=cookie,
-        )
+        seed_evidence = session_web_get(service, "seed_evidence")
+        if not seed_evidence:
+            seed_evidence = build_service_seed_evidence(
+                service,
+                open_ports,
+                cookie=cookie,
+            )
         prior_discovery = load_prior_web_discovery(followup_dir, service)
         for prior_url in prior_discovery.get("urls") or []:
             seed_evidence.append({
                 "source": "Execução anterior",
                 "url": prior_url,
             })
+
+        session_web_set(service, "seed_evidence", seed_evidence)
 
         result_by_key[key] = {
             "service": service,

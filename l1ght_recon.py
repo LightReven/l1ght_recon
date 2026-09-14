@@ -4194,7 +4194,11 @@ def _ffuf_item_matches_baseline(item, profile):
     except Exception:
         status = 0
 
-    if status in {401, 403, 407, 429} or status >= 500:
+    # 401/403/407 podem representar recursos reais protegidos e são
+    # preservados. Já 429/5xx estáveis devem ser comparados à baseline:
+    # serviços que respondem 503 para qualquer path não podem virar milhares
+    # de falsos positivos.
+    if status in {401, 403, 407}:
         return False
 
     item_url = str(item.get("url") or "")
@@ -4225,7 +4229,7 @@ def _ffuf_item_matches_baseline(item, profile):
     signature = (profile.get("signatures") or {}).get(suffix)
     if not signature:
         return False
-    if not (200 <= status < 400):
+    if not (200 <= status < 600):
         return False
     if status != int(signature.get("status") or -1):
         return False
@@ -4295,6 +4299,7 @@ def _run_ffuf_json_stream(
         text=True,
         bufsize=1,
     )
+    _register_active_process(process)
 
     def add_item(item, queue=True):
         if not isinstance(item, dict):
@@ -4341,6 +4346,7 @@ def _run_ffuf_json_stream(
             add_item(item, queue=True)
 
     return_code = process.wait()
+    _unregister_active_process(process)
     elapsed = time.monotonic() - started_at
     _debug_log(
         "COMMAND_END",
@@ -4522,12 +4528,23 @@ def run_ffuf_content(
 
     combined = seed_complete_pass(auto_calibrate=True, suffix="")
 
-    if not combined and attempted_bases:
+    rejected_by_baseline = sum(
+        int(profile.get("rejected") or 0)
+        for profile in baseline_cache.values()
+    )
+
+    if not combined and attempted_bases and rejected_by_baseline == 0:
         warning(
             f"FFUF em {service['url']} não retornou achados após os filtros "
             "conservadores; validando novamente sem -ac..."
         )
         combined.extend(seed_complete_pass(auto_calibrate=False, suffix="_fallback"))
+    elif not combined and rejected_by_baseline:
+        info(
+            f"FFUF em {service['url']}: respostas genéricas foram reconhecidas "
+            f"pela baseline ({rejected_by_baseline} descartadas); "
+            "fallback sem -ac omitido."
+        )
 
     unique = {}
     for item in combined:

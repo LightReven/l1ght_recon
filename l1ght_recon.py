@@ -1230,6 +1230,7 @@ def run_command(
             text=True,
             bufsize=1,
         )
+        _register_active_process(process)
 
         stdout_thread = threading.Thread(
             target=_reader,
@@ -1281,6 +1282,8 @@ def run_command(
         if stderr:
             _debug_log("STDERR", stderr)
 
+        _unregister_active_process(process)
+
         if timed_out:
             if output_file is not None:
                 Path(output_file).write_text(stdout, encoding="utf-8")
@@ -1300,10 +1303,14 @@ def run_command(
     except KeyboardInterrupt:
         if process is not None and process.poll() is None:
             process.kill()
+        if process is not None:
+            _unregister_active_process(process)
         _debug_log("INTERRUPT", safe_command)
         warning("Execução interrompida pelo usuário.")
         raise
     except Exception as exc:
+        if process is not None:
+            _unregister_active_process(process)
         _debug_log("COMMAND_EXCEPTION", f"cmd={safe_command} exc={exc!r}")
         error(f"Falha executando {command[0]}: {exc}")
         return "", "", -1

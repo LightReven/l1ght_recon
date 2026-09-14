@@ -67,7 +67,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Scanning & Enumeration
 # ============================================================
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 AUTHOR = "Rafael Ademilton"
 HANDLE = "l1ghtr3v3n"
 
@@ -96,6 +96,11 @@ NUCLEI_PARTIAL_SEEN = defaultdict(set)
 NIKTO_PARTIAL_SEEN = defaultdict(set)
 WEB_TOOL_SEMAPHORES = {}
 TOOL_BINARIES = {}
+SESSION_STATE_PATH = None
+SESSION_STATE = {}
+SESSION_STATE_LOCK = threading.RLock()
+ACTIVE_PROCESSES = set()
+ACTIVE_PROCESSES_LOCK = threading.RLock()
 
 DEFAULT_UDP_TOP_PORTS = 200
 FAST_UDP_TOP_PORTS = 100

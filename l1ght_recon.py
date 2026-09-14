@@ -4408,6 +4408,8 @@ def run_ffuf_content(
     seed_urls=None,
     announce=True,
     full_mode=False,
+    explicit_bases=None,
+    resume_existing=False,
 ):
     aggregate_file = service_dir / "ffuf_content.json"
     filter_file = service_dir / "ffuf_filter_summary.json"
@@ -4417,9 +4419,17 @@ def run_ffuf_content(
         return []
 
     max_bases = 8 if FAST_MODE else (24 if full_mode else 12)
-    fuzz_bases = ffuf_bases_from_seeds(
-        service, seed_urls or [service["url"]], max_bases=max_bases
-    )
+    if explicit_bases:
+        normalized_bases = []
+        for value in explicit_bases:
+            value = canonicalize_seed_url(value)
+            if same_service(value, service["url"]):
+                normalized_bases.append(value.rstrip("/") + "/")
+        fuzz_bases = sorted(dict.fromkeys(normalized_bases))[:max_bases]
+    else:
+        fuzz_bases = ffuf_bases_from_seeds(
+            service, seed_urls or [service["url"]], max_bases=max_bases
+        )
     started = metric_start(
         "ffuf_content", service=service["url"], bases=len(fuzz_bases),
         depth=ffuf_depth, full=bool(full_mode),
@@ -4468,6 +4478,18 @@ def run_ffuf_content(
         fuzz_url = base_url.rstrip("/") + "/FUZZ"
         result_file = service_dir / f"ffuf_run_{index:02d}{suffix}.json"
         raw_log_file = service_dir / f"ffuf_run_{index:02d}{suffix}.stdout.log"
+        done_file = service_dir / f"ffuf_run_{index:02d}{suffix}.done"
+
+        if resume_existing and done_file.exists() and result_file.exists():
+            cached = []
+            for item in _load_ffuf_result_file(result_file):
+                if not _ffuf_item_matches_baseline(item, profile):
+                    cached.append(item)
+            _debug_log(
+                "FFUF_RESUME",
+                f"base={base_url} cached={len(cached)} file={result_file}",
+            )
+            return cached
 
         command = [
             "ffuf", "-w", f"{wordlist}:FUZZ", "-u", fuzz_url,
@@ -4497,7 +4519,7 @@ def run_ffuf_content(
                 return False
             return True
 
-        return _run_ffuf_json_stream(
+        results = _run_ffuf_json_stream(
             command,
             service["url"],
             label="FFUF",
@@ -4505,6 +4527,14 @@ def run_ffuf_content(
             raw_log_file=raw_log_file,
             result_filter=keep_item,
         )
+        try:
+            done_file.write_text(
+                datetime.now().isoformat(timespec="seconds"),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return results
 
     def seed_complete_pass(auto_calibrate=True, suffix=""):
         combined = []

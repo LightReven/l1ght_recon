@@ -9135,14 +9135,20 @@ Fluxo:
         wpscan_executor.shutdown(wait=True, cancel_futures=False)
 
     service_results = list(shellshock_results)
+    if cached_service_results is not None:
+        service_results.extend(cached_service_results)
     udp_ports = []
     udp_candidates = []
+    if cached_udp_result is not None:
+        udp_ports = cached_udp_result.get("open") or []
+        udp_candidates = cached_udp_result.get("open_filtered") or []
 
     if service_future is not None:
         try:
-            service_results.extend(
-                wait_future_with_progress(service_future, "Enumeração de serviços")
+            new_service_results = wait_future_with_progress(
+                service_future, "Enumeração de serviços"
             )
+            service_results.extend(new_service_results)
         except Exception as exc:
             warning(f"Falha consolidando enumeração de serviços TCP: {exc}")
 
@@ -9165,6 +9171,7 @@ Fluxo:
             if isinstance(udp_result, dict):
                 udp_ports = udp_result.get("open") or []
                 udp_candidates = udp_result.get("open_filtered") or []
+                session_phase_set("udp_result", udp_result)
             else:
                 udp_ports = udp_result or []
             if udp_candidates:
@@ -9260,6 +9267,7 @@ Fluxo:
         unique_service_results.append(item)
 
     service_results = unique_service_results
+    session_phase_set("service_results", service_results)
 
     # Resultados parciais já foram preservados. Se algo excedeu o limite,
     # oferece uma nova execução sem timeout somente no final.
@@ -9285,6 +9293,7 @@ Fluxo:
     )
     metric_end("html_report", report_started, file=html_report)
     elapsed_seconds = time.monotonic() - execution_started
+    session_mark_complete()
     _debug_log("EXECUTION", f"total_duration={elapsed_seconds:.3f}s")
     print_final_compilation(
         target,
@@ -9305,4 +9314,16 @@ Fluxo:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        terminate_active_processes()
+        print()
+        warning("Execução interrompida. O estado parcial foi preservado.")
+        if SESSION_STATE_PATH is not None:
+            print(
+                f"  Continue com: l1ght_recon -t "
+                f"{SESSION_STATE.get('target') or 'ALVO'} --resume"
+            )
+            print(f"  Estado......: {SESSION_STATE_PATH}")
+        raise SystemExit(130)

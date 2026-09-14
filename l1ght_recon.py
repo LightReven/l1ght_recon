@@ -5440,6 +5440,198 @@ def run_whatweb(service, service_dir, cookie=None, announce=True):
 
 
 # ============================================================
+# Exposed Git metadata enumeration
+# ============================================================
+
+def _redact_url_userinfo(value):
+    try:
+        parsed = urlparse(str(value))
+        if parsed.username is None and parsed.password is None:
+            return str(value)
+        hostname = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        netloc = f"<redacted>@{hostname}{port}"
+        return parsed._replace(netloc=netloc).geturl()
+    except Exception:
+        return str(value)
+
+
+def _git_candidate_bases(service, discovered_urls):
+    bases = {canonicalize_seed_url(service["url"]).rstrip("/") + "/"}
+    for value in discovered_urls or []:
+        if not same_service(value, service["url"]):
+            continue
+        try:
+            parsed = urlparse(canonicalize_seed_url(value))
+            path = parsed.path or "/"
+            if path.endswith("/"):
+                directory = path
+            else:
+                directory = path.rsplit("/", 1)[0] + "/" if "/" in path else "/"
+            bases.add(f"{parsed.scheme}://{parsed.netloc}{directory}")
+        except Exception:
+            continue
+    return sorted(bases, key=lambda value: (value.count("/"), len(value), value))[:12]
+
+
+def run_git_exposure_enum(service, service_dir, discovered_urls=None, cookie=None):
+    session = requests.Session()
+    session.headers.update({"User-Agent": f"L1ght-Recon/{VERSION} git-enum"})
+    if cookie:
+        session.headers["Cookie"] = cookie
+
+    findings = []
+    for base in _git_candidate_bases(service, discovered_urls):
+        head_url = urljoin(base, ".git/HEAD")
+        try:
+            response = session.get(
+                head_url,
+                timeout=6,
+                verify=False,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            continue
+
+        body = (response.text or "").strip()
+        if response.status_code != 200:
+            continue
+        if not (
+            re.fullmatch(r"ref:\s+refs/[A-Za-z0-9._/\-]+", body)
+            or re.fullmatch(r"[0-9a-fA-F]{40}", body)
+        ):
+            continue
+
+        item = {
+            "base_url": base,
+            "git_url": urljoin(base, ".git/"),
+            "head": body,
+            "branch": "",
+            "commit": "",
+            "remotes": [],
+            "refs": [],
+            "log_head": [],
+        }
+
+        if body.lower().startswith("ref:"):
+            ref = body.split(":", 1)[1].strip()
+            if ref.startswith("refs/heads/"):
+                item["branch"] = ref[len("refs/heads/"):]
+            try:
+                ref_response = session.get(
+                    urljoin(base, ".git/" + ref),
+                    timeout=6,
+                    verify=False,
+                    allow_redirects=False,
+                )
+                ref_body = (ref_response.text or "").strip()
+                if ref_response.status_code == 200 and re.fullmatch(r"[0-9a-fA-F]{40}", ref_body):
+                    item["commit"] = ref_body
+            except requests.RequestException:
+                pass
+        else:
+            item["commit"] = body
+
+        try:
+            config = session.get(
+                urljoin(base, ".git/config"),
+                timeout=6,
+                verify=False,
+                allow_redirects=False,
+            )
+            if config.status_code == 200:
+                current_remote = ""
+                for raw in (config.text or "").splitlines():
+                    line = raw.strip()
+                    remote_match = re.match(r'\[remote\s+"([^"]+)"\]', line, re.I)
+                    if remote_match:
+                        current_remote = remote_match.group(1)
+                        continue
+                    url_match = re.match(r"url\s*=\s*(.+)", line, re.I)
+                    if url_match and current_remote:
+                        item["remotes"].append({
+                            "name": current_remote,
+                            "url": _redact_url_userinfo(url_match.group(1).strip()),
+                        })
+        except requests.RequestException:
+            pass
+
+        try:
+            packed = session.get(
+                urljoin(base, ".git/packed-refs"),
+                timeout=6,
+                verify=False,
+                allow_redirects=False,
+            )
+            if packed.status_code == 200:
+                for raw in (packed.text or "").splitlines():
+                    line = raw.strip()
+                    match = re.match(r"([0-9a-fA-F]{40})\s+(.+)", line)
+                    if match:
+                        item["refs"].append({
+                            "commit": match.group(1),
+                            "ref": match.group(2),
+                        })
+        except requests.RequestException:
+            pass
+
+        try:
+            log_head = session.get(
+                urljoin(base, ".git/logs/HEAD"),
+                timeout=6,
+                verify=False,
+                allow_redirects=False,
+            )
+            if log_head.status_code == 200:
+                for raw in (log_head.text or "").splitlines()[-10:]:
+                    parts = raw.split("\t", 1)
+                    metadata = parts[0].split()
+                    if len(metadata) >= 2 and re.fullmatch(r"[0-9a-fA-F]{40}", metadata[1]):
+                        item["log_head"].append({
+                            "commit": metadata[1],
+                            "message": parts[1] if len(parts) > 1 else "",
+                        })
+        except requests.RequestException:
+            pass
+
+        findings.append(item)
+
+    result = {"exposed": bool(findings), "repositories": findings}
+    if findings:
+        output = service_dir / "git_exposure.json"
+        output.write_text(
+            json.dumps(result, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        redact_file_secret(output, cookie)
+
+    return result
+
+
+def print_git_exposure_results(service_url, result):
+    repositories = (result or {}).get("repositories") or []
+    if not repositories:
+        return
+
+    lines = ["", f"{BOLD}Git exposto - {service_url}{RESET}"]
+    for item in repositories:
+        lines.append(f"  [!] {item.get('git_url') or '-'}")
+        if item.get("branch"):
+            lines.append(f"      branch: {item['branch']}")
+        if item.get("commit"):
+            lines.append(f"      commit: {item['commit']}")
+        for remote in item.get("remotes") or []:
+            lines.append(
+                f"      remote {remote.get('name') or '-'}: {remote.get('url') or '-'}"
+            )
+    lines.append(
+        "  [i] Enumeração limitada a metadados básicos; "
+        "nenhum objeto do repositório é reconstruído."
+    )
+    console_block(lines)
+
+
+# ============================================================
 # WordPress detection / WPScan
 # ============================================================
 

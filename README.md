@@ -24,6 +24,33 @@ O script registra automaticamente o comando `l1ght_recon` no PATH. Depois do pre
 l1ght_recon -t 192.168.92.206
 ```
 
+## Continuidade e follow-up
+
+O L1ght Recon mantém `session_state.json` dentro de cada execução. Se uma execução da mesma versão for interrompida com `Ctrl+C`, os resultados concluídos são preservados e a próxima chamada para o mesmo alvo pode retomar automaticamente a sessão incompleta encontrada no diretório atual ou em `~/l1ght_recon_results`.
+
+Também é possível solicitar explicitamente:
+
+```bash
+l1ght_recon -t 192.168.92.206 --resume
+l1ght_recon -t 192.168.92.206 --resume recon_192.168.92.206_20260914_120000
+```
+
+O `--resume` reutiliza fases já concluídas, como Nmap, HTTPX, Katana e scanners Web. No FFUF cada base finalizada ganha um checkpoint `.done`; se a interrupção ocorrer no meio da enumeração, as bases concluídas não são executadas novamente.
+
+Para uma **segunda passagem** que aprofunda o que já foi encontrado, use:
+
+```bash
+l1ght_recon -t 192.168.92.206 --follow-up
+```
+
+O `--follow-up` cria uma nova execução, importa URLs e resultados da execução anterior e prioriza os diretórios mais profundos já descobertos. Assim, se a primeira passagem encontrou `/admin/bkp`, a próxima pode iniciar o FFUF diretamente nessa árvore em vez de repetir a raiz. O Nmap/HTTPX continuam sendo refeitos para confirmar que o alvo e os serviços permanecem disponíveis.
+
+Use `--fresh` quando quiser ignorar uma sessão incompleta e começar do zero.
+
+### Git exposto
+
+Serviços Web recebem uma verificação básica de exposição de `.git`. A enumeração só é apresentada quando `.git/HEAD` é confirmado e coleta apenas metadados úteis, como branch, commit atual, remotes, packed refs e últimas entradas de `logs/HEAD`. O L1ght Recon não reconstrói automaticamente os objetos do repositório. Use `--skip-git-enum` para desabilitar.
+
 ## Perfis
 
 O perfil padrão prioriza equilíbrio entre cobertura, velocidade e fluidez. O UDP testa as **200 portas mais frequentes** e confirma de forma direcionada candidatos `open|filtered`; somente portas efetivamente confirmadas como `open` são contabilizadas como abertas.
@@ -91,6 +118,10 @@ l1ght_recon -t alvo.local --log
 ```
 
 A enumeração de MySQL inclui `mysql-empty-password` para testar somente os casos triviais de **root sem senha** e **anonymous sem senha**; o resultado só é exibido quando o login vazio é aceito. Serviços Web também recebem uma verificação direcionada com o NSE `http-shellshock`, incluindo URIs CGI descobertas pelo recon e um pequeno conjunto de caminhos comuns. A seção só aparece quando o NSE marca explicitamente o alvo como vulnerável.
+
+## Versão 2.5.0
+
+A versão 2.5.0 adiciona sessões retomáveis com `session_state.json`, auto-resume após interrupção, `--resume`, `--follow-up` e `--fresh`. O follow-up reaproveita URLs/diretórios da passagem anterior e inicia o FFUF pelas árvores já descobertas. Também adiciona enumeração básica de `.git` exposto e corrige falsos positivos de FFUF em serviços que respondem 503/429/5xx de forma uniforme para caminhos inexistentes.
 
 ## Versão 2.4.0
 

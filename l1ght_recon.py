@@ -8462,7 +8462,8 @@ Fluxo:
         output_dir,
     )
 
-    if not args.skip_udp:
+    cached_udp_result = session_phase_get("udp_result")
+    if not args.skip_udp and cached_udp_result is None:
         info(
             "Iniciando scan UDP em segundo plano; "
             "o resultado será apresentado somente no final."
@@ -8473,10 +8474,20 @@ Fluxo:
             output_dir,
             args.udp_top,
         )
+    elif cached_udp_result is not None:
+        success("Resume: reutilizando resultado UDP da execução anterior.")
 
-    nmap_started = metric_start("nmap_tcp")
-    open_ports = run_nmap(host, output_dir)
-    metric_end("nmap_tcp", nmap_started, open_ports=len(open_ports))
+    cached_open_ports = session_phase_get("open_ports")
+    if resume_dir is not None and cached_open_ports is not None:
+        open_ports = cached_open_ports
+        success(
+            f"Resume: reutilizando {len(open_ports)} porta(s) TCP da execução anterior."
+        )
+    else:
+        nmap_started = metric_start("nmap_tcp")
+        open_ports = run_nmap(host, output_dir)
+        metric_end("nmap_tcp", nmap_started, open_ports=len(open_ports))
+        session_phase_set("open_ports", open_ports)
 
     if not open_ports:
         warning(
@@ -8484,7 +8495,8 @@ Fluxo:
             "O fluxo continuará para considerar resultados UDP."
         )
 
-    if open_ports and not args.skip_service_enum:
+    cached_service_results = session_phase_get("service_results")
+    if open_ports and not args.skip_service_enum and cached_service_results is None:
         info(
             "Iniciando enumeração básica dos serviços em segundo plano."
         )
@@ -8503,10 +8515,20 @@ Fluxo:
                 output_dir,
                 {"entries": [], "raw": ""},
             )
+    elif cached_service_results is not None:
+        success(
+            f"Resume: reutilizando {len(cached_service_results)} resultado(s) de enumeração de serviços."
+        )
 
     web_services = []
+    cached_web_services = session_phase_get("web_services")
 
-    if open_ports and tools["httpx"]:
+    if resume_dir is not None and cached_web_services is not None:
+        web_services = cached_web_services
+        success(
+            f"Resume: reutilizando {len(web_services)} serviço(s) Web já identificados."
+        )
+    elif open_ports and tools["httpx"]:
         httpx_started = metric_start("httpx_probe")
         web_services = probe_web_services(
             host,
@@ -8515,6 +8537,7 @@ Fluxo:
             cookie=cookie,
         )
         metric_end("httpx_probe", httpx_started, services=len(web_services))
+        session_phase_set("web_services", web_services)
     elif open_ports and not tools["httpx"]:
         warning(
             "HTTPX não está disponível; a identificação automática "

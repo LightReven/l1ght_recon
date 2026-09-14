@@ -1,7 +1,7 @@
 {
-  "version": "2.4.0",
+  "version": "2.5.0",
   "channel": "stable",
-  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_4_0.py",
-  "sha256": "c9ec962866e0aa72b51ba101791c07f2644a1eea8c15db9e22dfcc43c0249951",
-  "notes": "Detecção automática e contextual de WordPress com WPScan somente quando confirmado; perfis fast/default/full, suporte a WPSCAN_API_TOKEN, relatório HTML/JSON e instalação WPScan via pacote da distro ou RubyGems. Corrige também a idempotência da SecLists no setup."
+  "url": "https://raw.githubusercontent.com/LightReven/l1ght_recon/main/releases/l1ght_recon_v2_5_0.py",
+  "sha256": "d33dc84b880aea5b8fcc014015f7143bcfc50ff7282a5f137aefa1a2d8e079f9",
+  "notes": "Sessões retomáveis com session_state.json e auto-resume, --resume/--follow-up/--fresh, checkpoints por base FFUF, follow-up profundo de diretórios já descobertos, enumeração básica de .git exposto e correção de falsos positivos FFUF em respostas 503/429/5xx uniformes."
 }

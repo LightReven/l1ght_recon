@@ -953,6 +953,8 @@ def print_flow():
         "   bancos, Redis, VNC, Telnet e banner genérico.",
         "   MySQL inclui teste de root/anonymous com senha vazia e só reporta sucesso.",
         "   Serviços Web recebem verificação Shellshock; só vulnerabilidades confirmadas aparecem.",
+        "   Exposição .git é verificada e, quando confirmada, HEAD/config/refs/logs são enumerados.",
+        "   session_state.json permite auto-resume; --follow-up aprofunda caminhos da execução anterior.",
         "   RPC/NFS também usam rpcinfo/showmount/rpcclient quando disponíveis.",
         "",
         "6. Identificação das portas Web",
@@ -7405,6 +7407,7 @@ def generate_report(
         wafw00f = result.get("wafw00f") or {}
         wordpress_detection = result.get("wordpress_detection") or {}
         wpscan = result.get("wpscan") or {}
+        git_exposure = result.get("git_exposure") or {}
         katana_urls = result["katana_urls"]
 
         fingerprint_rows = [
@@ -7523,6 +7526,28 @@ def generate_report(
                 "".join(details) or "-",
             ])
 
+        git_html = ""
+        if git_exposure.get("exposed"):
+            git_rows = []
+            for repository in git_exposure.get("repositories") or []:
+                remotes = "<br>".join(
+                    html.escape(
+                        f"{remote.get('name') or '-'}: {remote.get('url') or '-'}"
+                    )
+                    for remote in repository.get("remotes") or []
+                ) or "-"
+                git_rows.append([
+                    html.escape(str(repository.get("git_url") or "-")),
+                    html.escape(str(repository.get("branch") or "-")),
+                    html.escape(str(repository.get("commit") or "-")),
+                    remotes,
+                ])
+            git_html = f"""
+<h3>Git exposto</h3>
+<p class="muted">Enumeração básica de metadados .git; nenhum objeto do repositório é reconstruído automaticamente.</p>
+{html_table(["URL .git", "Branch", "Commit", "Remotes"], git_rows)}
+"""
+
         wordpress_html = ""
         if wordpress_detection.get("detected"):
             detection_rows = [
@@ -7631,6 +7656,8 @@ def generate_report(
 {html_table(["URL", "Status", "Identificações"], whatweb_rows)}
 
 {wordpress_html}
+
+{git_html}
 
 <h3>WAFW00F - identificação de WAF</h3>
 {html_table(["Campo", "Resultado"], wafw00f_rows)}
@@ -7840,6 +7867,12 @@ def print_final_web_summary(all_results):
         )
         print(f"    Nuclei.................: {len(result.get('nuclei') or [])}")
         print(f"    Nikto..................: {len(result.get('nikto') or [])}")
+        git_exposure = result.get("git_exposure") or {}
+        if git_exposure.get("exposed"):
+            print(
+                f"    Git exposto.............: "
+                f"{len(git_exposure.get('repositories') or [])} repositório(s)"
+            )
         wp_detection = result.get("wordpress_detection") or {}
         if wp_detection.get("detected"):
             wp = result.get("wpscan") or {}
@@ -7919,6 +7952,10 @@ def print_final_compilation(
     print(f"Depth FFUF...............: {args.ffuf_depth}")
     print(f"Sessão autenticada.......: {'sim' if cookie else 'não'}")
     print(f"Low-noise................: {'sim' if LOW_NOISE else 'não'}")
+    if SESSION_STATE.get("mode") == "resume":
+        print("Sessão...................: retomada")
+    elif SESSION_STATE.get("mode") == "follow-up":
+        print("Sessão...................: follow-up de execução anterior")
     print(
         f"Timeout por comando......: "
         f"{'desabilitado' if COMMAND_TIMEOUT == 0 else str(COMMAND_TIMEOUT) + 's'}"

@@ -8581,29 +8581,45 @@ Fluxo:
         service_dir = output_dir / f"web_{service['port']}_{service['scheme']}"
         service_dir.mkdir(parents=True, exist_ok=True)
 
+        seed_evidence = build_service_seed_evidence(
+            service,
+            open_ports,
+            cookie=cookie,
+        )
+        prior_discovery = load_prior_web_discovery(followup_dir, service)
+        for prior_url in prior_discovery.get("urls") or []:
+            seed_evidence.append({
+                "source": "Execução anterior",
+                "url": prior_url,
+            })
+
         result_by_key[key] = {
             "service": service,
             "service_dir": service_dir,
-            "seed_evidence": build_service_seed_evidence(
-                service,
-                open_ports,
-                cookie=cookie,
-            ),
-            "katana_urls": [service["url"]],
-            "katana_forms": [],
-            "ffuf_content": [],
-            "ffuf_vhosts": [],
+            "seed_evidence": seed_evidence,
+            "followup_bases": prior_discovery.get("bases") or [],
+            "katana_urls": session_web_get(service, "katana_urls", [service["url"]]),
+            "katana_forms": session_web_get(service, "katana_forms", []),
+            "ffuf_content": session_web_get(service, "ffuf_content", []),
+            "ffuf_vhosts": session_web_get(service, "ffuf_vhosts", []),
             "source": None,
             "source_cache": {},
             "parameters": [],
             "javascript": [],
-            "nikto": [],
-            "nuclei": [],
-            "whatweb": [],
-            "wafw00f": {},
-            "wordpress_detection": {"detected": False, "score": 0, "evidence": []},
-            "wpscan": {},
-            "public_exploits": [],
+            "nikto": session_web_get(service, "nikto", []),
+            "nuclei": session_web_get(service, "nuclei", []),
+            "whatweb": session_web_get(service, "whatweb", []),
+            "wafw00f": session_web_get(service, "wafw00f", {}),
+            "wordpress_detection": session_web_get(
+                service,
+                "wordpress_detection",
+                {"detected": False, "score": 0, "evidence": []},
+            ),
+            "wpscan": session_web_get(service, "wpscan", {}),
+            "git_exposure": session_web_get(
+                service, "git_exposure", {"exposed": False, "repositories": []}
+            ),
+            "public_exploits": session_web_get(service, "public_exploits", []),
             "preliminary_parameters": [],
         }
 
@@ -8647,6 +8663,7 @@ Fluxo:
         try:
             value = future.result()
             result_by_key[key][field] = value
+            session_web_set(result_by_key[key]["service"], field, value)
         except Exception as exc:
             value = [] if field != "wafw00f" else {}
             result_by_key[key][field] = value
@@ -8690,7 +8707,7 @@ Fluxo:
                 result_by_key[key]["seed_evidence"],
             )
 
-            if tools["ffuf"] and not args.skip_ffuf:
+            if tools["ffuf"] and not args.skip_ffuf and not session_web_done(service, "ffuf_content"):
                 info(
                     f"Iniciando FFUF em {service['url']} - "
                     "diretórios e arquivos em segundo plano."
@@ -8708,9 +8725,11 @@ Fluxo:
                     seed_urls,
                     False,
                     args.full,
+                    result_by_key[key].get("followup_bases") if followup_dir else None,
+                    bool(resume_dir),
                 )
 
-                if vhost_domain:
+                if vhost_domain and not session_web_done(service, "ffuf_vhosts"):
                     info(
                         f"Iniciando FFUF VHosts em {service['url']} "
                         f"para {vhost_domain}."
@@ -8727,7 +8746,7 @@ Fluxo:
                         False,
                     )
 
-            if tools["nikto"] and not args.skip_nikto:
+            if tools["nikto"] and not args.skip_nikto and not session_web_done(service, "nikto"):
                 info(
                     f"Iniciando Nikto em {service['url']} "
                     "em segundo plano."
@@ -8742,7 +8761,7 @@ Fluxo:
                     False,
                 )
 
-            if tools["nuclei"] and not args.skip_nuclei:
+            if tools["nuclei"] and not args.skip_nuclei and not session_web_done(service, "nuclei"):
                 info(
                     f"Iniciando Nuclei em {service['url']} "
                     "em segundo plano."
@@ -8757,7 +8776,7 @@ Fluxo:
                     False,
                 )
 
-            if tools["whatweb"] and not args.skip_whatweb:
+            if tools["whatweb"] and not args.skip_whatweb and not session_web_done(service, "whatweb"):
                 info(
                     f"Iniciando WhatWeb em {service['url']} "
                     "em segundo plano."
@@ -8772,7 +8791,7 @@ Fluxo:
                     False,
                 )
 
-            if tools["wafw00f"] and not args.skip_wafw00f:
+            if tools["wafw00f"] and not args.skip_wafw00f and not session_web_done(service, "wafw00f"):
                 info(
                     f"Iniciando WAFW00F em {service['url']} "
                     "em segundo plano."
@@ -8787,7 +8806,7 @@ Fluxo:
                     False,
                 )
 
-            if tools.get("searchsploit"):
+            if tools.get("searchsploit") and not session_web_done(service, "public_exploits"):
                 submit_background(
                     search_web_public_exploits,
                     key,
